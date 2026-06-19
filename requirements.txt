@@ -1,3 +1,12 @@
+# flash-attn NON si installa con pip install standard perché richiede una wheel
+# precompilata specifica per la combinazione torch/CUDA/Python.
+# Installare manualmente PRIMA di pip install -r requirements.txt:
+#
+#   pip install https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu12torch2.6cxx11abiFALSE-cp311-cp311-linux_x86_64.whl
+#
+# Compatibile con: torch==2.6.0+cu124, Python 3.11, Linux x86_64
+# Per altre combinazioni: https://github.com/Dao-AILab/flash-attention/releases
+
 accelerate==1.14.0
 aiohappyeyeballs==2.6.2
 aiohttp==3.14.1
