@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #----USAGE EXAMPLE----
-# sbatch run.sh /homes/$USER/cvcs2026/test_qwen_VL.py
+# sbatch run_test.sh /homes/$USER/cvcs2026/test_qwen_VL.py
 
 #SBATCH --job-name=test_qwen
 #SBATCH --partition=all_usr_prod
@@ -14,10 +14,9 @@
 #SBATCH --error=/homes/%u/cvcs2026/logs/err/test_%j.err
 #SBATCH --account=cvcs2026
 
-export HF_HOME=/work/cvcs2026/dati_progetto/.cache_hf
-export TORCH_HOME=/work/cvcs2026/dati_progetto/.cache_torch
+export HF_HOME=/work/cvcs2026/feature_extractors/dati_progetto/.cache_hf
+export TORCH_HOME=/work/cvcs2026/feature_extractors/dati_progetto/.cache_torch
 
-module load python/3.11.11-gcc-11.4.0
 source /homes/$USER/cvcs2026/venv/bin/activate
 
 echo "Avvio job su nodo: $SLURMD_NODENAME"
