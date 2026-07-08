@@ -30,11 +30,10 @@ def normalize_answer(text: str) -> str:
 
     return white_space_fix(remove_articles(remove_punctuation(lowercase(text))))
 
-#Modified: ""Check if the normalized ground truth is INCLUDED in the normalized prediction.""" 
+
 def exact_match_score(prediction: str, ground_truth: str) -> bool:
     """Check if the normalized prediction exactly matches the normalized ground truth."""
-    return normalize_answer(prediction) in normalize_answer(ground_truth)
-
+    return normalize_answer(prediction) == normalize_answer(ground_truth)
 
 
 def metric_max_over_ground_truths(
