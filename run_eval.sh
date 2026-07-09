@@ -18,7 +18,7 @@ echo "Avvio eval su nodo: $SLURMD_NODENAME"
 
 python3 /homes/$USER/cvcs2026/infoseek_eval/evaluation_infoseek.py \
     --adjust_score \
-    --input_path /work/cvcs2026/feature_extractors/dati_progetto/predictions/baseline_qwen \
+    --input_path /work/cvcs2026/feature_extractors/dati_progetto/predictions/rag_oracle \
     --reference_path /work/cvcs2026/feature_extractors/dati_progetto/reference.jsonl \
     --reference_qtype_path /work/cvcs2026/feature_extractors/dati_progetto/reference_qtype.jsonl
 
