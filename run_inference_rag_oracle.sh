@@ -9,8 +9,8 @@
 #SBATCH --error=/homes/%u/cvcs2026/logs/err/rag_oracle_%j.err
 #SBATCH --account=cvcs2026
 
-export HF_HOME=/work/cvcs2026/dati_progetto/.cache_hf
-export TORCH_HOME=/work/cvcs2026/dati_progetto/.cache_torch
+export HF_HOME=/work/cvcs2026/feature_extractors/dati_progetto/.cache_hf
+export TORCH_HOME=/work/cvcs2026/feature_extractors/dati_progetto/.cache_torch
 
 source /homes/$USER/cvcs2026/venv/bin/activate
 
