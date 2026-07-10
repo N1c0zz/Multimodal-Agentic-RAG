@@ -24,7 +24,7 @@ def load_qwen(model_id: str):
     print(f"Loading Qwen model: {model_id}")
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
         model_id,
-        torch_dtype=torch.bfloat16,
+        dtype=torch.float16,
         device_map="auto",
         cache_dir="/work/cvcs2026/feature_extractors/dati_progetto/.cache_hf",
     )
