@@ -21,7 +21,7 @@ source /homes/$USER/cvcs2026/venv/bin/activate
 
 echo "Avvio RAG Double-Pass su nodo: $SLURMD_NODENAME"
 
-/homes/$USER/cvcs2026/venv/bin/python /homes/$USER/cvcs2026/scripts/run_inference_double_rag.py \
+/homes/$USER/cvcs2026/venv/bin/python /homes/$USER/cvcs2026/scripts/run_inference_guesses.py \
     --output_dir /work/cvcs2026/feature_extractors/dati_progetto/predictions/rag_double_pass_dvulcano/guesses_qwen \
     --top_k 3
 
