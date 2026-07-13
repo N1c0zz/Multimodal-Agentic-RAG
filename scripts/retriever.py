@@ -54,7 +54,6 @@ class Retriever:
             cache_dir="/work/cvcs2026/feature_extractors/dati_progetto/.cache_hf",
         ).to(self.device).eval()
 
-        # Drop text components to save VRAM
         if hasattr(self.model, "text_model"):
             del self.model.text_model
         if hasattr(self.model, "text_projection"):
@@ -64,16 +63,10 @@ class Retriever:
 
     def _embed_image(self, image: Image.Image) -> np.ndarray:
         processed = self.processor(images=image, return_tensors="pt")
-        print(f"pixel_values shape: {processed.pixel_values.shape}")
-        print(f"pixel_values dtype: {processed.pixel_values.dtype}")
-        
         pixel_values = processed.pixel_values.to(dtype=torch.float16, device=self.device)
-        print(f"pixel_values on device: {pixel_values.device}")
 
         with torch.no_grad():
-            print("Calling encode_image...")
             embedding = self.model.encode_image(pixel_values)
-            print(f"embedding shape: {embedding.shape}")
             embedding = embedding / embedding.norm(p=2, dim=-1, keepdim=True)
 
         return embedding.cpu().numpy().astype("float32")
@@ -99,10 +92,6 @@ class Retriever:
         return "\n\n".join(context_parts)
 
     def retrieve(self, image: Image.Image) -> tuple[str, list[str]]:
-        """
-        Given a PIL image, retrieve the top-k most similar documents
-        and return their concatenated text context and the retrieved URLs.
-        """
         query_embedding = self._embed_image(image)
         scores, indices = self.index.search(query_embedding, k=self.top_k)
 
@@ -115,4 +104,5 @@ class Retriever:
             if context:
                 context_parts.append(context)
 
-        return "\n\n---\n\n".join(context_parts), retrieved_urls
+        final_context = "\n\n---\n\n".join(context_parts)
+        return final_context, retrieved_urls

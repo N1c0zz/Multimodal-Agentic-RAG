@@ -14,7 +14,6 @@ from PIL import Image
 from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
 from qwen_vl_utils import process_vision_info
 
-import sys
 from retriever import Retriever
 
 IMAGE_ROOT = Path("/work/cvcs2026/encyclopedic")
@@ -24,15 +23,23 @@ def load_qwen(model_id: str):
     print(f"Loading Qwen model: {model_id}")
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
         model_id,
-        dtype=torch.float16,
+        torch_dtype=torch.bfloat16,
         device_map="auto",
         cache_dir="/work/cvcs2026/feature_extractors/dati_progetto/.cache_hf",
     )
+
+    model.generation_config.do_sample = False
+    model.generation_config.temperature = None
+    model.generation_config.top_p = None
+    model.generation_config.top_k = None
+
+    min_pixels = 256 * 28 * 28
+    max_pixels = 1280 * 28 * 28
     processor = AutoProcessor.from_pretrained(
         model_id,
         model_max_length=16384,
-        min_pixels=3136,
-        max_pixels=301056,
+        min_pixels=min_pixels,
+        max_pixels=max_pixels,
         cache_dir="/work/cvcs2026/feature_extractors/dati_progetto/.cache_hf",
     )
     return model, processor
@@ -47,7 +54,6 @@ def run_inference(
 ) -> str:
     image_path = str(IMAGE_ROOT / sample["related_images"])
 
-    # Retrieve context using the query image
     context, _ = retriever.retrieve(image)
 
     if context:
@@ -89,7 +95,14 @@ def run_inference(
     ).to("cuda")
 
     with torch.no_grad():
-        generated_ids = model.generate(**inputs, max_new_tokens=64)
+        generated_ids = model.generate(
+            **inputs,
+            max_new_tokens=64,
+            do_sample=False,
+            temperature=None,
+            top_p=None,
+            top_k=None,
+        )
 
     generated_ids_trimmed = [
         out_ids[len(in_ids):]
@@ -121,14 +134,11 @@ def main():
         data = json.load(f)
     samples = list(data.values()) if isinstance(data, dict) else data
 
-    # Load retriever first
     retriever = Retriever(top_k=args.top_k)
-
-    # Load Qwen
     model, processor = load_qwen(args.model_id)
 
     results = []
-    for sample in tqdm(samples[:1], desc="RAG Inference"):
+    for sample in tqdm(samples, desc="RAG Inference"):
         try:
             image_path = str(IMAGE_ROOT / sample["related_images"])
             image = Image.open(image_path).convert("RGB")
@@ -137,9 +147,14 @@ def main():
             print(f"Error on {sample['unique_id']}: {e}")
             prediction = ""
 
+        reference = sample.get('answer', "")
+
         results.append({
             "data_id": sample["unique_id"],
-            "prediction": prediction,
+            "question": sample["question"],
+            "reference": reference,
+            "answers": prediction,
+            "question_type": sample.get('question_type', 'automatic'),
         })
 
     out_file = output_dir / "split_0.json"
