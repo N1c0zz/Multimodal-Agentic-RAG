@@ -1,25 +1,23 @@
 #!/bin/bash
-#SBATCH --job-name=infoseek_eval
+#SBATCH --job-name=evqa_eval
 #SBATCH --partition=all_usr_prod
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --gpus=0
 #SBATCH --mem=20G
-#SBATCH --time=03:10:00
-#SBATCH --output=/homes/%u/cvcs2026/logs/out/eval_%j.out
-#SBATCH --error=/homes/%u/cvcs2026/logs/err/eval_%j.err
+#SBATCH --time=03:00:00
+#SBATCH --output=/homes/%u/cvcs2026/logs/out/evqa_eval_%j.out
+#SBATCH --error=/homes/%u/cvcs2026/logs/err/evqa_eval_%j.err
 #SBATCH --account=cvcs2026
 
 source /homes/$USER/cvcs2026/venv_eval/bin/activate
 
-export PYTHONPATH=/homes/$USER/cvcs2026
+PRED_DIR=/work/cvcs2026/feature_extractors/dati_progetto/predictions/baseline_qwen
 
-echo "Avvio eval su nodo: $SLURMD_NODENAME"
+echo "Avvio Encyclopedic-VQA eval su nodo: $SLURMD_NODENAME"
+echo "Predictions dir: ${PRED_DIR}"
 
-python3 /homes/$USER/cvcs2026/infoseek_eval/evaluation_infoseek.py \
-    --adjust_score \
-    --input_path /work/cvcs2026/feature_extractors/dati_progetto/predictions/rag_oracle \
-    --reference_path /work/cvcs2026/feature_extractors/dati_progetto/reference.jsonl \
-    --reference_qtype_path /work/cvcs2026/feature_extractors/dati_progetto/reference_qtype.jsonl
+python /homes/$USER/cvcs2026/scripts/evqa_eval.py \
+    --input_path ${PRED_DIR}
 
 echo "Eval terminata."
