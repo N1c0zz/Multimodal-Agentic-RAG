@@ -1,7 +1,10 @@
 """
 Runs Qwen2.5-VL-3B-Instruct on the encyclopedic test subset and writes
-predictions in the format expected by evaluation_infoseek.py:
-  output_dir/split_0.json  -> [{"data_id": ..., "prediction": ...}, ...]
+predictions directly in the format expected by the Encyclopedic-VQA
+eval script (evqa_compute_metrics.py):
+  output_dir/split_0.json -> [{"data_id": ..., "question": ..., 
+                                "reference": ..., "answers": ..., 
+                                "question_type": ...}, ...]
 """
 
 import json
@@ -14,6 +17,7 @@ from qwen_vl_utils import process_vision_info
 
 IMAGE_ROOT = Path("/work/cvcs2026/encyclopedic")
 
+
 def load_model(model_id: str):
     print(f"Loading model: {model_id}")
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
@@ -21,12 +25,19 @@ def load_model(model_id: str):
         torch_dtype=torch.bfloat16,
         device_map="auto",
     )
+
+    model.generation_config.do_sample = False
+    model.generation_config.temperature = None
+    model.generation_config.top_p = None
+    model.generation_config.top_k = None
+
     min_pixels = 256 * 28 * 28
-    max_pixels = 512 * 28 * 28
+    max_pixels = 1280 * 28 * 28
     processor = AutoProcessor.from_pretrained(
         model_id,
         min_pixels=min_pixels,
         max_pixels=max_pixels,
+        model_max_length=16384,
     )
     return model, processor
 
@@ -36,7 +47,7 @@ def run_inference(sample: dict, model, processor) -> str:
     image_path = str(IMAGE_ROOT / image_rel_path)
 
     prompt_instruction = " Answer strictly with a single word or a short phrase. Do not use full sentences."
-    
+
     messages = [
         {
             "role": "user",
@@ -60,7 +71,14 @@ def run_inference(sample: dict, model, processor) -> str:
     ).to("cuda")
 
     with torch.no_grad():
-        generated_ids = model.generate(**inputs, max_new_tokens=64)
+        generated_ids = model.generate(
+            **inputs,
+            max_new_tokens=64,
+            do_sample=False,
+            temperature=None,
+            top_p=None,
+            top_k=None,
+        )
 
     generated_ids_trimmed = [
         out_ids[len(in_ids):]
@@ -99,9 +117,14 @@ def main():
             print(f"Error on {sample['unique_id']}: {e}")
             prediction = ""
 
+        reference = sample.get('answer', "")
+
         results.append({
             "data_id": sample['unique_id'],
-            "prediction": prediction,
+            "question": sample['question'],
+            "reference": reference,
+            "answers": prediction,
+            "question_type": sample.get('question_type', 'automatic'),
         })
 
     out_file = output_dir / "split_0.json"
