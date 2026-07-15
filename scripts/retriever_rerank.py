@@ -15,7 +15,6 @@ import numpy as np
 from PIL import Image
 from transformers import AutoModel, CLIPImageProcessor, AutoTokenizer
 from retriever import Retriever
-from cropper import Cropper
 
 CAPTION_PROMPT = (
     "What is the specific species, name, or identity of the main subject "
@@ -25,15 +24,12 @@ CAPTION_PROMPT = (
 
 
 class RetrieverRerank(Retriever):
-    def __init__(self, top_k: int = 3, top_k_retrieval: int = 10, alpha: float = 0.5, use_crop: bool = False):
+    def __init__(self, top_k: int = 3, top_k_retrieval: int = 10, alpha: float = 0.5):
         self.top_k_retrieval = top_k_retrieval
         self.alpha = alpha
-        self.use_crop = use_crop
         super().__init__(top_k=top_k_retrieval)
         self.top_k_final = top_k
         self._load_text_encoder()
-        if self.use_crop:
-            self.cropper = Cropper()
 
     def _load_text_encoder(self):
         """Load EVA-CLIP text encoder for caption and document embedding."""
@@ -123,17 +119,7 @@ class RetrieverRerank(Retriever):
         qwen_processor,
     ) -> tuple[str, list[str], str]:
 
-        if self.use_crop:
-            try:
-                cropped_image, entity = self.cropper.detect_and_crop(image, question)
-                print(f"  Cropped entity: {entity}, size: {cropped_image.size}")
-            except Exception as e:
-                print(f"  Cropping failed: {e}, using original image")
-                cropped_image = image
-        else:
-            cropped_image = image
-
-        query_image_embedding = self._embed_image(cropped_image)
+        query_image_embedding = self._embed_image(image)
         visual_scores, indices = self.index.search(
             query_image_embedding, k=self.top_k_retrieval
         )
@@ -145,7 +131,7 @@ class RetrieverRerank(Retriever):
 
         print(f"  Top-10 URLs retrieved, generating caption...")
 
-        caption = self._generate_caption(cropped_image, qwen_model, qwen_processor)
+        caption = self._generate_caption(image, qwen_model, qwen_processor)
         print(f"  Caption: {caption[:100]}...")
 
         caption_embedding = self._embed_text(caption)
