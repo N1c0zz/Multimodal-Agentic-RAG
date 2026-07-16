@@ -51,10 +51,10 @@ def run_inference(
     processor,
     retriever: Retriever,
     image: Image.Image,
-) -> str:
+) -> tuple[str, list[str]]:
     image_path = str(IMAGE_ROOT / sample["related_images"])
 
-    context, _ = retriever.retrieve(image)
+    context, retrieved_urls = retriever.retrieve(image)
 
     if context:
         prompt_text = (
@@ -113,7 +113,7 @@ def run_inference(
         skip_special_tokens=True,
         clean_up_tokenization_spaces=False,
     )
-    return output[0].strip()
+    return output[0].strip(), retrieved_urls
 
 
 def main():
@@ -142,12 +142,16 @@ def main():
         try:
             image_path = str(IMAGE_ROOT / sample["related_images"])
             image = Image.open(image_path).convert("RGB")
-            prediction = run_inference(sample, model, processor, retriever, image)
+            prediction, retrieved_urls = run_inference(sample, model, processor, retriever, image)
         except Exception as e:
             print(f"Error on {sample['unique_id']}: {e}")
             prediction = ""
+            retrieved_urls = []
 
         reference = sample.get('answer', "")
+
+        oracle_urls = [u.strip() for u in sample.get('wikipedia_url', '').split('|') if u.strip()]
+        evidence_in_context = any(url in retrieved_urls for url in oracle_urls)
 
         results.append({
             "data_id": sample["unique_id"],
@@ -155,6 +159,7 @@ def main():
             "reference": reference,
             "answers": prediction,
             "question_type": sample.get('question_type', 'automatic'),
+            "evidence_in_context": evidence_in_context,
         })
 
     out_file = output_dir / "split_0.json"
