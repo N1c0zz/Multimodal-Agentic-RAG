@@ -30,7 +30,6 @@ def load_qwen(model_id: str):
         cache_dir="/work/cvcs2026/feature_extractors/dati_progetto/.cache_hf",
     )
     
-    # Blocco della generazione creativa (Greedy Decoding)
     model.generation_config.do_sample = False
     model.generation_config.temperature = None
     model.generation_config.top_p = None
