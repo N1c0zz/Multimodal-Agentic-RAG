@@ -5,6 +5,7 @@
 #SBATCH --ntasks=1
 #SBATCH --gres=gpu:1
 #SBATCH --time=03:00:00
+#SBATCH --mem=32G
 #SBATCH --output=/homes/%u/cvcs2026/logs/out/rag_oracle_%j.out
 #SBATCH --error=/homes/%u/cvcs2026/logs/err/rag_oracle_%j.err
 #SBATCH --account=cvcs2026
