@@ -48,10 +48,10 @@ def run_inference(
     processor,
     retriever: RetrieverRerankDynamic,
     image: Image.Image,
-) -> tuple[str, bool]:
+) -> tuple[str, bool, list[str]]:
     image_path = str(IMAGE_ROOT / sample["related_images"])
 
-    context, _, caption, high_confidence = retriever.retrieve_rerank(
+    context, top_urls, caption, high_confidence = retriever.retrieve_rerank(
         image, sample["question"], model, processor
     )
 
@@ -114,7 +114,7 @@ def run_inference(
         skip_special_tokens=True,
         clean_up_tokenization_spaces=False,
     )
-    return output[0].strip(), high_confidence
+    return output[0].strip(), high_confidence, top_urls
 
 
 def main():
@@ -153,15 +153,19 @@ def main():
         try:
             image_path = str(IMAGE_ROOT / sample["related_images"])
             image = Image.open(image_path).convert("RGB")
-            prediction, high_confidence = run_inference(sample, model, processor, retriever, image)
+            prediction, high_confidence, retrieved_urls = run_inference(sample, model, processor, retriever, image)
             if high_confidence:
                 high_conf_count += 1
         except Exception as e:
             print(f"Error on {sample['unique_id']}: {e}")
             prediction = ""
             high_confidence = False
+            retrieved_urls = []
 
         reference = sample.get('answer', "")
+
+        oracle_urls = [u.strip() for u in sample.get('wikipedia_url', '').split('|') if u.strip()]
+        evidence_in_context = any(url in retrieved_urls for url in oracle_urls)
 
         results.append({
             "data_id": sample["unique_id"],
@@ -170,6 +174,7 @@ def main():
             "answers": prediction,
             "question_type": sample.get('question_type', 'automatic'),
             "high_confidence": high_confidence,
+            "evidence_in_context": evidence_in_context,
         })
 
     out_file = output_dir / "split_0.json"
