@@ -2,12 +2,19 @@
 Shared retriever for the ReAct agent: single EVA-CLIP-8B (vision+text) instance,
 used by both agent tools via a per-call `text_weight` override.
 
-text_weight=0.0  -> pure image-only retrieval (used by retrieve_knowledge)
-text_weight=0.3  -> image+hypothesis fused retrieval (used by refine_search)
+text_weight=0.0  -> pure image-only retrieval
+text_weight=0.3  -> image+hypothesis(es) fused retrieval
 
-Context is kept moderately sized (MAX_SECTIONS=4, per-source labels) since,
-unlike the non-agentic pipelines, the agent also has to read tool
-descriptions, reason, and produce well-formed JSON on top of the context.
+MAX_SECTIONS reverted to 4 (from 8): raising it to mirror the static
+"rich context" experiment measurably hurt score|hit (51.9% -> 46.8%) at
+1000-sample scale, confirming the agent -- which also carries tool-call
+reasoning overhead -- cannot absorb as much context as the non-agentic
+pipeline could.
+
+The text side of the fused query supports MULTIPLE comma-separated
+hypotheses: each is embedded separately and averaged before fusion with the
+image embedding, mirroring the static "hypothesis-guided fusion" experiment
+(top-3 guesses averaged), which outperformed a single-hypothesis fusion.
 """
 
 import json
@@ -18,7 +25,8 @@ from PIL import Image
 from transformers import AutoModel, CLIPImageProcessor, AutoTokenizer
 
 EXCLUDE_SECTIONS = {"references", "external links", "see also", "notes"}
-MAX_SECTIONS = 4  # kept conservative for the agent's context budget
+MAX_SECTIONS = 4          # reverted from 8
+MAX_CONTEXT_CHARS = 3000  # safety cap per retrieved document, kept as extra margin
 
 INDEX_PATH = "/work/cvcs2026/encyclopedic/knn.index"
 KNN_PATH   = "/work/cvcs2026/encyclopedic/knn.json"
@@ -27,7 +35,7 @@ CACHE_DIR  = "/work/cvcs2026/feature_extractors/dati_progetto/.cache_hf"
 
 
 class RetrieverAgent:
-    def __init__(self, top_k: int = 2, text_weight: float = 0.3):
+    def __init__(self, top_k: int = 3, text_weight: float = 0.3):
         self.top_k = top_k
         self.text_weight = text_weight
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -66,7 +74,7 @@ class RetrieverAgent:
         ).eval()
         print("EVA-CLIP-8B loaded successfully.")
 
-    def _embed_multimodal(self, image: Image.Image, text_query: str, text_weight: float) -> np.ndarray:
+    def _embed_multimodal(self, image: Image.Image, text_queries: list, text_weight: float) -> np.ndarray:
         processed = self.processor(images=image, return_tensors="pt")
         pixel_values = processed.pixel_values.to(dtype=torch.float16, device=self.device)
 
@@ -74,13 +82,16 @@ class RetrieverAgent:
             img_emb = self.model.encode_image(pixel_values)
             img_emb = img_emb / img_emb.norm(p=2, dim=-1, keepdim=True)
 
-            if text_weight > 0.0 and text_query.strip():
+            valid_queries = [q for q in text_queries if q]
+            if text_weight > 0.0 and valid_queries:
                 text_inputs = self.tokenizer(
-                    [text_query], padding=True, truncation=True,
+                    valid_queries, padding=True, truncation=True,
                     max_length=77, return_tensors="pt",
                 )
                 input_ids = text_inputs["input_ids"].to(self.device)
                 txt_emb = self.model.encode_text(input_ids)
+                txt_emb = txt_emb / txt_emb.norm(p=2, dim=-1, keepdim=True)
+                txt_emb = txt_emb.mean(dim=0, keepdim=True)
                 txt_emb = txt_emb / txt_emb.norm(p=2, dim=-1, keepdim=True)
 
                 combined_emb = ((1.0 - text_weight) * img_emb) + (text_weight * txt_emb)
@@ -108,22 +119,23 @@ class RetrieverAgent:
             if len(parts) >= MAX_SECTIONS:
                 break
 
-        return "\n".join(parts)
+        full_text = "\n".join(parts)
+        if len(full_text) > MAX_CONTEXT_CHARS:
+            full_text = full_text[:MAX_CONTEXT_CHARS] + " [...truncated]"
+        return full_text
 
     def retrieve(
         self,
         image: Image.Image,
         query_text: str = "",
         text_weight: float = None,
-    ) -> tuple[str, list[str]]:
-        """
-        text_weight=None -> uses self.text_weight (default fused behavior)
-        text_weight=0.0  -> forces pure image-only retrieval regardless of query_text
-        """
+    ) -> tuple:
         if text_weight is None:
             text_weight = self.text_weight
 
-        query_embedding = self._embed_multimodal(image, query_text, text_weight)
+        text_queries = [q.strip() for q in query_text.split(",")] if query_text.strip() else []
+
+        query_embedding = self._embed_multimodal(image, text_queries, text_weight)
         scores, indices = self.index.search(query_embedding, k=self.top_k)
 
         retrieved_urls = []
