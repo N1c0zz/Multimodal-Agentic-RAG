@@ -1,7 +1,7 @@
 """
 ReAct agentic inference with two retrieval tools:
-- retrieve_knowledge: image-only first pass
-- refine_search: image + hypothesis fused second pass
+- retrieve_knowledge: image + auto-generated top-3 hypotheses (first pass)
+- refine_search: image + agent-provided hypothesis (optional second pass)
 
 Enforces (outside the agent, to avoid relying on a known-unreliable
 smolagents FinalAnswerTool override, see huggingface/smolagents#1254) that
@@ -12,9 +12,8 @@ it, matching what the non-agentic RAG baseline would always do.
 Falls back to a plain (no-tool, no-context) Qwen call only if the agent
 fails entirely (exception or empty answer).
 
-Also logs evidence_in_context (whether the oracle Wikipedia page was among
-the URLs retrieved by EITHER tool, or by the forced fallback retrieval, at
-any point during the episode).
+Also logs evidence_in_context, and now n_steps / used_fallback /
+forced_retrieval, for post-hoc analysis.
 """
 
 import json
@@ -50,8 +49,7 @@ CUSTOM_INSTRUCTIONS = (
     '{"name": "retrieve_knowledge", "arguments": {"reasoning": '
     '"I need background information about the entity shown in the image."}}\n\n'
     "\n"
-    "Call retrieve_knowledge AT MOST ONCE per question -- it is based only "
-    "on the image, so calling it again returns the exact same evidence. "
+    "Call retrieve_knowledge AT MOST ONCE per question. "
     "If that evidence is insufficient or seems to be about the wrong entity, "
     "call refine_search ONCE with your best hypothesis about the entity's "
     "specific identity (e.g. a species name) -- this CAN return different, "
@@ -94,11 +92,7 @@ def plain_vlm_fallback(question: str, image: Image.Image, model: QwenAgentModel)
 
 
 def context_augmented_fallback(question: str, image: Image.Image, context: str, model: QwenAgentModel) -> str:
-    """
-    Used when the agent answered WITHOUT ever calling retrieve_knowledge:
-    forces one retrieval pass (done by the caller) and re-answers using it,
-    matching the non-agentic RAG prompt format for consistency.
-    """
+    """Used when the agent answered WITHOUT ever calling retrieve_knowledge."""
     prompt_text = (
         f"Context:\n{context}\n\n"
         f"Based ONLY on the context above, answer the following question. "
@@ -131,11 +125,12 @@ def main():
     )
     parser.add_argument("--output_dir", required=True)
     parser.add_argument("--model_id", default="Qwen/Qwen2.5-VL-3B-Instruct")
-    parser.add_argument("--top_k", type=int, default=3)  # allineato al RAG base
+    parser.add_argument("--top_k", type=int, default=3)
     parser.add_argument("--text_weight", type=float, default=0.3)
     parser.add_argument("--max_steps", type=int, default=6)
     parser.add_argument("--max_new_tokens", type=int, default=512)
     parser.add_argument("--temperature", type=float, default=0.3)
+    parser.add_argument("--max_retries", type=int, default=2)
     parser.add_argument("--n_samples", type=int, default=None)
     parser.add_argument("--verbosity_level", type=int, default=1)
     args = parser.parse_args()
@@ -151,13 +146,17 @@ def main():
 
     retriever = RetrieverAgent(top_k=args.top_k, text_weight=args.text_weight)
     episode_state = EpisodeState()
-    tool_retrieve = KnowledgeRetrievalTool(retriever, episode_state)
-    tool_refine = RefineSearchTool(retriever, episode_state, text_weight=args.text_weight)
+
     model = QwenAgentModel(
         model_id=args.model_id,
         max_new_tokens=args.max_new_tokens,
         temperature=args.temperature,
+        max_retries=args.max_retries,
     )
+    model.set_episode_state(episode_state)
+
+    tool_retrieve = KnowledgeRetrievalTool(retriever, episode_state, model.model, model.processor)
+    tool_refine = RefineSearchTool(retriever, episode_state, text_weight=args.text_weight)
 
     agent = ToolCallingAgent(
         tools=[tool_retrieve, tool_refine],
@@ -195,11 +194,6 @@ def main():
         except Exception as e:
             print(f"Agent error on {sample['unique_id']}: {e}")
 
-        # Safety net: the agent answered without ever retrieving evidence.
-        # Force one retrieval pass and re-answer with it, so every sample
-        # gets at least the same retrieval opportunity as the non-agentic
-        # RAG baseline, without relying on the model reliably choosing to
-        # retrieve on its own.
         if prediction and not episode_state.has_retrieved:
             print(f"Agent skipped retrieval on {sample['unique_id']}, forcing one pass")
             forced_retrieval = True
