@@ -11,8 +11,23 @@ Uses light sampling (temperature) rather than pure greedy decoding: with
 byte-identical retries after a tool-call error, greedy decoding reproduces
 the exact same (wrong) output every time. A small temperature lets the
 agent escape these loops.
+
+NEW: tool-name validation with internal retry + coercion. At 1000-sample
+scale, prompt-level mitigations (instructions, examples, temperature) were
+NOT sufficient: ~34% of episodes hallucinated a non-existent tool (e.g.
+image_search, web_search -- plausibly memorized from generic smolagents
+tutorial examples) and never recovered within max_steps. We now validate
+the tool name in our own generate() before returning control to the agent:
+- if invalid, regenerate internally (up to max_retries times, at increasing
+  temperature) -- these retries do NOT count against max_steps.
+- if still invalid after retries, coerce the model's own JSON text by
+  substituting only the tool name (and argument key) for a valid one,
+  preserving whatever surrounding format the model produced (safer than
+  inventing new formatting, since it reuses a pattern known to parse
+  correctly in successful calls from the same pathway).
 """
 
+import re
 import torch
 from PIL import Image
 from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
@@ -28,6 +43,15 @@ ROLE_MAP = {
     "tool-call": "assistant",
     "tool-response": "user",
 }
+
+VALID_TOOL_NAMES = {"retrieve_knowledge", "refine_search", "final_answer"}
+TOOL_ARG_KEY = {
+    "retrieve_knowledge": "reasoning",
+    "refine_search": "hypothesis",
+    "final_answer": "answer",
+}
+NAME_PATTERN = re.compile(r'"name"\s*:\s*"([a-zA-Z_]+)"')
+ARG_KEY_PATTERN = re.compile(r'"arguments"\s*:\s*\{\s*"([a-zA-Z_]+)"')
 
 
 def _flatten_content(content) -> str:
@@ -45,6 +69,27 @@ def _flatten_content(content) -> str:
     return str(content)
 
 
+def _extract_tool_name(text: str):
+    match = NAME_PATTERN.search(text)
+    return match.group(1) if match else None
+
+
+def _coerce_to_valid_tool(text: str, target_name: str) -> str:
+    """
+    Rewrites an invalid tool-name JSON blob into a valid one, preserving the
+    model's own surrounding format/prefix -- safer than inventing new syntax
+    from scratch, since it reuses a pattern already known to parse correctly.
+    """
+    fixed = NAME_PATTERN.sub(f'"name": "{target_name}"', text, count=1)
+    arg_match = ARG_KEY_PATTERN.search(fixed)
+    if arg_match:
+        old_key = arg_match.group(1)
+        new_key = TOOL_ARG_KEY[target_name]
+        if old_key != new_key:
+            fixed = fixed.replace(f'"{old_key}"', f'"{new_key}"', 1)
+    return fixed
+
+
 class QwenAgentModel(Model):
     """smolagents-compatible Model backed by a local Qwen2.5-VL-3B-Instruct."""
 
@@ -53,12 +98,15 @@ class QwenAgentModel(Model):
         model_id: str = "Qwen/Qwen2.5-VL-3B-Instruct",
         max_new_tokens: int = 512,
         temperature: float = 0.3,
+        max_retries: int = 2,
         **kwargs,
     ):
         super().__init__(model_id=model_id, flatten_messages_as_text=False, **kwargs)
         self.max_new_tokens = max_new_tokens
         self.temperature = temperature
+        self.max_retries = max_retries
         self.current_image = None
+        self.episode_state = None  # set externally, see set_episode_state()
 
         print(f"Loading Qwen model for agent: {model_id}")
         self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
@@ -80,6 +128,32 @@ class QwenAgentModel(Model):
     def set_image(self, image: Image.Image):
         """Must be called once per episode/sample, before agent.run()."""
         self.current_image = image
+
+    def set_episode_state(self, episode_state):
+        """
+        Called once, before the sample loop. The SAME episode_state object
+        is reused across all samples (reset per-sample elsewhere), so this
+        only needs to be set once for the whole run.
+        """
+        self.episode_state = episode_state
+
+    def _generate_once(self, inputs, temperature: float) -> str:
+        with torch.no_grad():
+            generated_ids = self.model.generate(
+                **inputs,
+                max_new_tokens=self.max_new_tokens,
+                do_sample=True,
+                temperature=temperature,
+                top_p=0.9,
+                top_k=None,
+            )
+        trimmed = [
+            out_ids[len(in_ids):]
+            for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+        ]
+        return self.processor.batch_decode(
+            trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
+        )[0].strip()
 
     def generate(
         self,
@@ -127,23 +201,28 @@ class QwenAgentModel(Model):
             return_tensors="pt",
         ).to(self.model.device)
 
-        with torch.no_grad():
-            generated_ids = self.model.generate(
-                **inputs,
-                max_new_tokens=self.max_new_tokens,
-                do_sample=True,
-                temperature=self.temperature,
-                top_p=0.9,
-                top_k=None,
-            )
+        # --- First attempt ---
+        output_text = self._generate_once(inputs, self.temperature)
+        tool_name = _extract_tool_name(output_text)
 
-        trimmed = [
-            out_ids[len(in_ids):]
-            for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
-        ]
-        output_text = self.processor.batch_decode(
-            trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
-        )[0].strip()
+        # --- Internal retries if the tool name is invalid (does NOT count
+        #     against agent max_steps, since we never hand this back yet) ---
+        attempt = 0
+        while (
+            tool_name is not None
+            and tool_name not in VALID_TOOL_NAMES
+            and attempt < self.max_retries
+        ):
+            attempt += 1
+            retry_temperature = min(self.temperature + 0.2 * attempt, 0.9)
+            output_text = self._generate_once(inputs, retry_temperature)
+            tool_name = _extract_tool_name(output_text)
+
+        # --- Last resort: coerce the model's own text into a valid call ---
+        if tool_name is not None and tool_name not in VALID_TOOL_NAMES:
+            has_retrieved = self.episode_state.has_retrieved if self.episode_state else False
+            target_name = "retrieve_knowledge" if not has_retrieved else "final_answer"
+            output_text = _coerce_to_valid_tool(output_text, target_name)
 
         if stop_sequences:
             for stop in stop_sequences:
