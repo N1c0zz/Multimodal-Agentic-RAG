@@ -2,19 +2,12 @@
 Shared retriever for the ReAct agent: single EVA-CLIP-8B (vision+text) instance,
 used by both agent tools via a per-call `text_weight` override.
 
-text_weight=0.0  -> pure image-only retrieval
-text_weight=0.3  -> image+hypothesis(es) fused retrieval
+text_weight=0.0  -> pure image-only retrieval (used by retrieve_knowledge)
+text_weight=0.3  -> image+hypothesis(es) fused retrieval (used by refine_search)
 
-MAX_SECTIONS reverted to 4 (from 8): raising it to mirror the static
-"rich context" experiment measurably hurt score|hit (51.9% -> 46.8%) at
-1000-sample scale, confirming the agent -- which also carries tool-call
-reasoning overhead -- cannot absorb as much context as the non-agentic
-pipeline could.
-
-The text side of the fused query supports MULTIPLE comma-separated
-hypotheses: each is embedded separately and averaged before fusion with the
-image embedding, mirroring the static "hypothesis-guided fusion" experiment
-(top-3 guesses averaged), which outperformed a single-hypothesis fusion.
+Context is kept moderately sized (MAX_SECTIONS=4, per-source labels) since,
+unlike the non-agentic pipelines, the agent also has to read tool
+descriptions, reason, and produce well-formed JSON on top of the context.
 """
 
 import json
@@ -25,8 +18,7 @@ from PIL import Image
 from transformers import AutoModel, CLIPImageProcessor, AutoTokenizer
 
 EXCLUDE_SECTIONS = {"references", "external links", "see also", "notes"}
-MAX_SECTIONS = 4          # reverted from 8
-MAX_CONTEXT_CHARS = 3000  # safety cap per retrieved document, kept as extra margin
+MAX_SECTIONS = 4
 
 INDEX_PATH = "/work/cvcs2026/encyclopedic/knn.index"
 KNN_PATH   = "/work/cvcs2026/encyclopedic/knn.json"
@@ -119,10 +111,7 @@ class RetrieverAgent:
             if len(parts) >= MAX_SECTIONS:
                 break
 
-        full_text = "\n".join(parts)
-        if len(full_text) > MAX_CONTEXT_CHARS:
-            full_text = full_text[:MAX_CONTEXT_CHARS] + " [...truncated]"
-        return full_text
+        return "\n".join(parts)
 
     def retrieve(
         self,
