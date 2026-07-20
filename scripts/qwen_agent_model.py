@@ -2,29 +2,23 @@
 Custom smolagents Model wrapping our already-validated Qwen2.5-VL-3B-Instruct
 inference setup (high max_pixels, explicit model_max_length).
 
-Design choice: rather than routing the query image through smolagents'
-generic multimodal message-content pipeline, we keep the image as an
-attribute of this Model instance, set once per episode via set_image(),
-and always attach it to the *first* user turn we reconstruct for Qwen.
-
 Uses light sampling (temperature) rather than pure greedy decoding: with
 byte-identical retries after a tool-call error, greedy decoding reproduces
 the exact same (wrong) output every time. A small temperature lets the
 agent escape these loops.
 
-NEW: tool-name validation with internal retry + coercion. At 1000-sample
-scale, prompt-level mitigations (instructions, examples, temperature) were
-NOT sufficient: ~34% of episodes hallucinated a non-existent tool (e.g.
-image_search, web_search -- plausibly memorized from generic smolagents
-tutorial examples) and never recovered within max_steps. We now validate
-the tool name in our own generate() before returning control to the agent:
+Tool-name validation with internal retry + coercion: at 1000-sample scale,
+prompt-level mitigations alone (instructions, examples, temperature) were
+NOT sufficient -- a meaningful fraction of episodes hallucinated a
+non-existent tool name (e.g. image_search, web_search, plausibly memorized
+from generic smolagents tutorial examples) and never recovered within
+max_steps. This validates the tool name in generate() before returning
+control to the agent:
 - if invalid, regenerate internally (up to max_retries times, at increasing
-  temperature) -- these retries do NOT count against max_steps.
+  temperature) -- these retries do NOT count against the agent's max_steps.
 - if still invalid after retries, coerce the model's own JSON text by
   substituting only the tool name (and argument key) for a valid one,
-  preserving whatever surrounding format the model produced (safer than
-  inventing new formatting, since it reuses a pattern known to parse
-  correctly in successful calls from the same pathway).
+  preserving whatever surrounding format the model produced.
 """
 
 import re
@@ -70,8 +64,8 @@ def _flatten_content(content) -> str:
 
 
 def _extract_tool_name(text: str):
-    match = NAME_PATTERN.search(text)
-    return match.group(1) if match else None
+    m = NAME_PATTERN.search(text)
+    return m.group(1) if m else None
 
 
 def _coerce_to_valid_tool(text: str, target_name: str) -> str:
@@ -106,7 +100,7 @@ class QwenAgentModel(Model):
         self.temperature = temperature
         self.max_retries = max_retries
         self.current_image = None
-        self.episode_state = None  # set externally, see set_episode_state()
+        self.episode_state = None  # set externally via set_episode_state()
 
         print(f"Loading Qwen model for agent: {model_id}")
         self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
@@ -131,9 +125,10 @@ class QwenAgentModel(Model):
 
     def set_episode_state(self, episode_state):
         """
-        Called once, before the sample loop. The SAME episode_state object
-        is reused across all samples (reset per-sample elsewhere), so this
-        only needs to be set once for the whole run.
+        Called once before the sample loop (same episode_state object reused
+        across all samples, reset per-sample elsewhere). Used only to decide
+        the coercion target (retrieve_knowledge vs final_answer) as a last
+        resort when the model's tool name is invalid after all retries.
         """
         self.episode_state = episode_state
 
