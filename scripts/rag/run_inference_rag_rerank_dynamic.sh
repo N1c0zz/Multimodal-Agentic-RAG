@@ -17,7 +17,7 @@ export TORCH_HOME=/work/cvcs2026/feature_extractors/dati_progetto/.cache_torch
 source /homes/$USER/cvcs2026/venv/bin/activate
 
 echo "Avvio RAG Rerank Dynamic inference su nodo: $SLURMD_NODENAME"
-python /homes/$USER/cvcs2026/scripts/run_inference_rag_rerank_dynamic.py \
+python /homes/$USER/cvcs2026/scripts/rag/run_inference_rag_rerank_dynamic.py \
     --output_dir /work/cvcs2026/feature_extractors/dati_progetto/predictions/rag_rerank_dynamic \
     --top_k 3 \
     --top_k_retrieval 10 \

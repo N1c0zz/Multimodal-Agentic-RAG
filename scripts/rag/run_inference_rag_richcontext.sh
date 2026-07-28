@@ -17,7 +17,7 @@ export TORCH_HOME=/work/cvcs2026/feature_extractors/dati_progetto/.cache_torch
 source /homes/$USER/cvcs2026/venv/bin/activate
 
 echo "Avvio RAG RichContext inference su nodo: $SLURMD_NODENAME"
-python /homes/$USER/cvcs2026/scripts/run_inference_rag_richcontext.py \
+python /homes/$USER/cvcs2026/scripts/rag/run_inference_rag_richcontext.py \
     --output_dir /work/cvcs2026/feature_extractors/dati_progetto/predictions/rag_richcontext \
     --top_k 3
 echo "RAG RichContext inference terminata."

@@ -17,7 +17,7 @@ export TORCH_HOME=/work/cvcs2026/feature_extractors/dati_progetto/.cache_torch
 source /homes/$USER/cvcs2026/venv/bin/activate
 
 echo "Avvio RAG Combined inference su nodo: $SLURMD_NODENAME"
-python /homes/$USER/cvcs2026/scripts/run_inference_combined.py \
+python /homes/$USER/cvcs2026/scripts/rag/run_inference_combined.py \
     --output_dir /work/cvcs2026/feature_extractors/dati_progetto/predictions/rag_combined \
     --top_k 3 \
     --text_weight 0.3
