@@ -1,16 +1,16 @@
 """
 Retriever with caption-based re-ranking and dynamic top-k selection.
 If the top-1 candidate has a clear confidence margin over the second,
-only that document is used. Otherwise, top-k documents are used.
+only that document is used. Otherwise, the top-k documents are used.
 """
 
-import json
 import torch
-import faiss
 import numpy as np
 from PIL import Image
-from transformers import AutoModel, CLIPImageProcessor, AutoTokenizer
+from transformers import AutoTokenizer
 from retriever import Retriever
+
+from paths import CACHE_DIR
 
 CAPTION_PROMPT = (
     "What is the specific species, name, or identity of the main subject "
@@ -30,24 +30,24 @@ class RetrieverRerankDynamic(Retriever):
         self.top_k_retrieval = top_k_retrieval
         self.alpha = alpha
         self.confidence_threshold = confidence_threshold
-        super().__init__(top_k=top_k_retrieval)
+        # keep_text_encoder=True: see the note in RetrieverRerank.__init__.
+        super().__init__(top_k=top_k_retrieval, keep_text_encoder=True)
         self.top_k_final = top_k
         self._load_text_encoder()
 
     def _load_text_encoder(self):
-        print("Loading EVA-CLIP text encoder...")
+        """
+        Loads only the tokenizer. The text encoder itself is self.model
+        (already loaded by the base class with keep_text_encoder=True) --
+        no second EVA-CLIP-8B copy is loaded.
+        """
+        print("Loading EVA-CLIP tokenizer...")
         self.tokenizer = AutoTokenizer.from_pretrained(
             "BAAI/EVA-CLIP-8B",
             trust_remote_code=True,
-            cache_dir="/work/cvcs2026/feature_extractors/dati_progetto/.cache_hf",
+            cache_dir=CACHE_DIR,
         )
-        self.text_model = AutoModel.from_pretrained(
-            "BAAI/EVA-CLIP-8B",
-            torch_dtype=torch.float16,
-            trust_remote_code=True,
-            cache_dir="/work/cvcs2026/feature_extractors/dati_progetto/.cache_hf",
-        ).to(self.device).eval()
-        print("Text encoder loaded.")
+        print("Tokenizer loaded (reusing the shared EVA-CLIP-8B model for text encoding).")
 
     def _embed_text(self, text: str) -> np.ndarray:
         tokens = self.tokenizer(
@@ -59,7 +59,7 @@ class RetrieverRerankDynamic(Retriever):
         ).to(self.device)
 
         with torch.no_grad():
-            embedding = self.text_model.encode_text(tokens.input_ids)
+            embedding = self.model.encode_text(tokens.input_ids)
             embedding = embedding / embedding.norm(p=2, dim=-1, keepdim=True)
 
         return embedding.cpu().numpy().astype("float32")
@@ -117,6 +117,7 @@ class RetrieverRerankDynamic(Retriever):
         qwen_model,
         qwen_processor,
     ) -> tuple[str, list[str], str, bool]:
+        """Returns (joined_context, top_urls, generated_caption, high_confidence)."""
         query_image_embedding = self._embed_image(image)
         visual_scores, indices = self.index.search(
             query_image_embedding, k=self.top_k_retrieval
@@ -127,11 +128,7 @@ class RetrieverRerankDynamic(Retriever):
             url = self.knn[idx][0]
             candidates.append({"url": url, "visual_score": float(score)})
 
-        print(f"  Top-10 URLs retrieved, generating caption...")
-
         caption = self._generate_caption(image, qwen_model, qwen_processor)
-        print(f"  Caption: {caption[:100]}...")
-
         caption_embedding = self._embed_text(caption)
 
         for candidate in candidates:
@@ -159,23 +156,14 @@ class RetrieverRerankDynamic(Retriever):
 
         candidates.sort(key=lambda x: x["final_score"], reverse=True)
 
-        print("  Re-ranked top-3:")
-        for c in candidates[:3]:
-            print(
-                f"    {c['url']} | visual: {c['visual_score']:.3f} | "
-                f"text: {c['textual_score']:.3f} | final: {c['final_score']:.3f}"
-            )
-
+        # Dynamic selection: fall back to a single top-1 result only when the
+        # margin over the second candidate is large enough to trust it alone.
         high_confidence = False
         if len(candidates) >= 2:
             gap = candidates[0]["final_score"] - candidates[1]["final_score"]
             high_confidence = gap >= self.confidence_threshold
-            print(f"  Confidence gap: {gap:.3f} | High confidence: {high_confidence}")
 
-        if high_confidence:
-            selected = candidates[:1]
-        else:
-            selected = candidates[:self.top_k_final]
+        selected = candidates[:1] if high_confidence else candidates[:self.top_k_final]
 
         top_urls = [c["url"] for c in selected]
         context_parts = []

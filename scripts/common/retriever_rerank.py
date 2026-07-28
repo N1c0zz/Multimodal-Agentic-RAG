@@ -1,20 +1,20 @@
 """
 Retriever with caption-based re-ranking.
 Pipeline:
-1. EVA-CLIP image embed → FAISS search → top-10 URLs
+1. EVA-CLIP image embed -> FAISS search -> top-10 URLs
 2. Qwen generates a caption describing the query image
 3. EVA-CLIP text encoder embeds the caption
-4. For each retrieved doc: embed first section with EVA-CLIP text encoder
-5. Combine visual score + textual score → re-rank → top-3
+4. For each retrieved doc: embed its first section with EVA-CLIP text encoder
+5. Combine visual score + textual score -> re-rank -> top-3
 """
 
-import json
 import torch
-import faiss
 import numpy as np
 from PIL import Image
-from transformers import AutoModel, CLIPImageProcessor, AutoTokenizer
+from transformers import AutoTokenizer
 from retriever import Retriever
+
+from paths import CACHE_DIR
 
 CAPTION_PROMPT = (
     "What is the specific species, name, or identity of the main subject "
@@ -27,25 +27,29 @@ class RetrieverRerank(Retriever):
     def __init__(self, top_k: int = 3, top_k_retrieval: int = 10, alpha: float = 0.5):
         self.top_k_retrieval = top_k_retrieval
         self.alpha = alpha
-        super().__init__(top_k=top_k_retrieval)
+        # keep_text_encoder=True: this subclass needs encode_text(), so the
+        # base class keeps EVA-CLIP's text components loaded instead of
+        # dropping them -- _load_text_encoder() below then reuses self.model
+        # rather than loading a second full copy.
+        super().__init__(top_k=top_k_retrieval, keep_text_encoder=True)
         self.top_k_final = top_k
         self._load_text_encoder()
 
     def _load_text_encoder(self):
-        """Load EVA-CLIP text encoder for caption and document embedding."""
-        print("Loading EVA-CLIP text encoder...")
+        """
+        Loads only the tokenizer here. The text encoder itself is
+        self.model (already loaded by the base class with
+        keep_text_encoder=True) -- no second EVA-CLIP-8B copy is loaded.
+        Previously this method loaded an entire second ~16GB model just to
+        call encode_text() on it.
+        """
+        print("Loading EVA-CLIP tokenizer...")
         self.tokenizer = AutoTokenizer.from_pretrained(
             "BAAI/EVA-CLIP-8B",
             trust_remote_code=True,
-            cache_dir="/work/cvcs2026/feature_extractors/dati_progetto/.cache_hf",
+            cache_dir=CACHE_DIR,
         )
-        self.text_model = AutoModel.from_pretrained(
-            "BAAI/EVA-CLIP-8B",
-            torch_dtype=torch.float16,
-            trust_remote_code=True,
-            cache_dir="/work/cvcs2026/feature_extractors/dati_progetto/.cache_hf",
-        ).to(self.device).eval()
-        print("Text encoder loaded.")
+        print("Tokenizer loaded (reusing the shared EVA-CLIP-8B model for text encoding).")
 
     def _embed_text(self, text: str) -> np.ndarray:
         """Compute L2-normalized text embedding with EVA-CLIP."""
@@ -58,13 +62,13 @@ class RetrieverRerank(Retriever):
         ).to(self.device)
 
         with torch.no_grad():
-            embedding = self.text_model.encode_text(tokens.input_ids)
+            embedding = self.model.encode_text(tokens.input_ids)
             embedding = embedding / embedding.norm(p=2, dim=-1, keepdim=True)
 
         return embedding.cpu().numpy().astype("float32")
 
     def _generate_caption(self, image: Image.Image, qwen_model, qwen_processor) -> str:
-        """Use Qwen to generate a descriptive caption of the query image."""
+        """Use Qwen to generate a descriptive caption of the query image (greedy)."""
         messages = [
             {
                 "role": "user",
@@ -118,7 +122,7 @@ class RetrieverRerank(Retriever):
         qwen_model,
         qwen_processor,
     ) -> tuple[str, list[str], str]:
-
+        """Returns (joined_context, top_urls, generated_caption)."""
         query_image_embedding = self._embed_image(image)
         visual_scores, indices = self.index.search(
             query_image_embedding, k=self.top_k_retrieval
@@ -129,11 +133,7 @@ class RetrieverRerank(Retriever):
             url = self.knn[idx][0]
             candidates.append({"url": url, "visual_score": float(score)})
 
-        print(f"  Top-10 URLs retrieved, generating caption...")
-
         caption = self._generate_caption(image, qwen_model, qwen_processor)
-        print(f"  Caption: {caption[:100]}...")
-
         caption_embedding = self._embed_text(caption)
 
         for candidate in candidates:
@@ -160,10 +160,6 @@ class RetrieverRerank(Retriever):
             )
 
         candidates.sort(key=lambda x: x["final_score"], reverse=True)
-
-        print("  Re-ranked top-3:")
-        for c in candidates[:3]:
-            print(f"    {c['url']} | visual: {c['visual_score']:.3f} | text: {c['textual_score']:.3f} | final: {c['final_score']:.3f}")
 
         top_urls = [c["url"] for c in candidates[:self.top_k_final]]
         context_parts = []

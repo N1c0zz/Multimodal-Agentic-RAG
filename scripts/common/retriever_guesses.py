@@ -1,27 +1,34 @@
 """
-Retriever Module: Multi-Hypothesis Multimodal Fusion + Rich Context.
+Retriever for Multi-Hypothesis RAG (Double-Pass).
 
-Combines:
-- Weighted multimodal fusion retrieval (image + text query embedding, EVA-CLIP-8B)
-- Rich, labeled context extraction (more sections, section titles, [Source N] labels)
+A hybrid multimodal retrieval system using FAISS and EVA-CLIP-8B. Fuses
+L2-normalized visual (image) and semantic (text) embeddings via a tunable
+`text_weight`. The text side is expected to be a single combined query
+string (e.g. "Image tags: X, Y, Z. Question: ..."), NOT multiple separate
+hypotheses -- see the project report for why averaging separately-embedded
+hypotheses was tried elsewhere and found to underperform this single-string
+approach.
+
+Nearly identical to retriever_combined.py, except _build_context here does
+NOT add section titles or [Source N] labels (retriever_combined.py adds
+"rich context" on top of the same fusion mechanism) -- kept as separate,
+independently-reported experiments rather than merged into one class.
 """
 
-import json
 import torch
 import faiss
+import json
 import numpy as np
 from PIL import Image
 from transformers import AutoModel, CLIPImageProcessor, AutoTokenizer
 
+from paths import INDEX_PATH, KNN_PATH, KB_PATH, CACHE_DIR
+
 EXCLUDE_SECTIONS = {"references", "external links", "see also", "notes"}
 MAX_SECTIONS = 4
 
-INDEX_PATH = "/work/cvcs2026/encyclopedic/knn.index"
-KNN_PATH   = "/work/cvcs2026/encyclopedic/knn.json"
-KB_PATH    = "/work/cvcs2026/encyclopedic/encyclopedic_kb_wiki.json"
 
-
-class Retriever:
+class RetrieverGuesses:
     def __init__(self, top_k: int = 3, text_weight: float = 0.3):
         self.top_k = top_k
         self.text_weight = text_weight
@@ -47,43 +54,40 @@ class Retriever:
 
     def _load_embedding_model(self):
         print("Loading EVA-CLIP-8B (Vision + Text)...")
-        cache_dir = "/work/cvcs2026/feature_extractors/dati_progetto/.cache_hf"
-
         self.processor = CLIPImageProcessor.from_pretrained(
             "openai/clip-vit-large-patch14",
-            cache_dir=cache_dir,
+            cache_dir=CACHE_DIR,
         )
         self.tokenizer = AutoTokenizer.from_pretrained(
             "BAAI/EVA-CLIP-8B",
             trust_remote_code=True,
-            cache_dir=cache_dir,
+            cache_dir=CACHE_DIR,
         )
         self.model = AutoModel.from_pretrained(
             "BAAI/EVA-CLIP-8B",
             torch_dtype=torch.float16,
             device_map="cuda",
             trust_remote_code=True,
-            cache_dir=cache_dir,
+            cache_dir=CACHE_DIR,
         ).eval()
-
         print("EVA-CLIP-8B loaded successfully.")
 
     def _embed_multimodal(self, image: Image.Image, text_query: str) -> np.ndarray:
-        # 1. Process Visual Features
+        # 1. Visual features
         processed = self.processor(images=image, return_tensors="pt")
         pixel_values = processed.pixel_values.to(dtype=torch.float16, device=self.device)
 
-        # 2. Process Text Features (hard truncation to prevent CLIP 77-token crashes)
+        # 2. Text features (hard truncation to prevent CLIP's 77-token limit crashes)
         text_inputs = self.tokenizer(
             [text_query],
             padding=True,
             truncation=True,
             max_length=77,
-            return_tensors="pt"
+            return_tensors="pt",
         )
         input_ids = text_inputs["input_ids"].to(self.device)
 
-        # 3. Encode and Fuse
+        # 3. Encode and fuse
         with torch.no_grad():
             img_emb = self.model.encode_image(pixel_values)
             img_emb = img_emb / img_emb.norm(p=2, dim=-1, keepdim=True)
@@ -97,7 +101,6 @@ class Retriever:
         return combined_emb.cpu().numpy().astype("float32")
 
     def _build_context(self, url: str) -> str:
-        """Rich context: more sections (up to MAX_SECTIONS), with section titles."""
         if url not in self.kb:
             return ""
 
@@ -105,17 +108,16 @@ class Retriever:
         section_texts = entry.get("section_texts", [])
         section_titles = entry.get("section_titles", [""] * len(section_texts))
 
-        parts = []
+        context_parts = []
         for title, text in zip(section_titles, section_texts):
             if title.lower() in EXCLUDE_SECTIONS:
                 continue
             if text.strip():
-                label = title.strip() if title.strip() else "Overview"
-                parts.append(f"[{label}] {text.strip()}")
-            if len(parts) >= MAX_SECTIONS:
+                context_parts.append(text.strip())
+            if len(context_parts) >= MAX_SECTIONS:
                 break
 
-        return "\n".join(parts)
+        return "\n\n".join(context_parts)
 
     def retrieve(self, image: Image.Image, query_text: str) -> tuple[str, list[str]]:
         query_embedding = self._embed_multimodal(image, query_text)
@@ -140,9 +142,4 @@ class Retriever:
             except Exception:
                 continue
 
-        # Rich context: etichetta i documenti con [Source N]
-        labeled_context = "\n\n".join(
-            [f"[Source {i+1}]\n{part}" for i, part in enumerate(context_parts)]
-        )
-
-        return labeled_context, retrieved_urls
+        return "\n\n---\n\n".join(context_parts), retrieved_urls
