@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #----USAGE EXAMPLE----
-# sbatch run_test.sh /homes/$USER/cvcs2026/test_qwen_VL.py
+# sbatch run_test.sh /homes/$USER/cvcs2026/scripts/archive/test_qwen_VL.py
 
 #SBATCH --job-name=test_qwen
 #SBATCH --partition=all_usr_prod
