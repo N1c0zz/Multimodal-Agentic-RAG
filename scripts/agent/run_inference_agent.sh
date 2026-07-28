@@ -17,7 +17,7 @@ export TORCH_HOME=/work/cvcs2026/feature_extractors/dati_progetto/.cache_torch
 source /homes/$USER/cvcs2026/venv/bin/activate
 
 echo "Avvio Agentic inference su nodo: $SLURMD_NODENAME"
-python /homes/$USER/cvcs2026/scripts/run_inference_agent.py \
+python /homes/$USER/cvcs2026/scripts/agent/run_inference_agent.py \
     --output_dir /work/cvcs2026/feature_extractors/dati_progetto/predictions/agent_final \
     --top_k 3 \
     --max_steps 6 \
