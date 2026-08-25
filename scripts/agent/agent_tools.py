@@ -1,39 +1,32 @@
 """
-smolagents Tools for the ReAct agent (3 tools + built-in final_answer):
-- assess_retrieval_need: decides RETRIEVE vs ANSWER_DIRECTLY, always first.
-- retrieve_knowledge: image + auto-generated guesses + question (first pass).
-- refine_search: agent decides whether to refine; a dedicated, grounded
-  Qwen call re-guesses and searches again (optional second pass).
+smolagents Tools for the ReAct agent -- 2 tool (+ final_answer nativo),
+per indicazione dei tutor di limitare il numero di tool (più tool
+confondevano misurabilmente questo modello da 3B nelle versioni precedenti):
+- assess_retrieval_need: decide RETRIEVE vs ANSWER_DIRECTLY, sempre primo.
+- retrieve_knowledge: recupera documenti INTERI (tutte le sezioni, non
+  troncate) per i top-k candidati, poi lascia che ReAG-Critic selezioni
+  quali singole SEZIONI sono rilevanti -- filtro fine sul testo completo,
+  invece di troncare a monte sperando che la sezione utile sopravviva.
+  Rispecchia l'esempio ufficiale di ReAG-Critic, che valuta sezioni
+  individuali, non articoli interi.
 
-Relevance filtering via ReAG-Critic is now AUTOMATIC, applied inside
-retrieve_knowledge and refine_search right after every retrieval, rather
-than a separate optional filter_context tool. Rationale: in practice, the
-agent called the equivalent optional tool in only ~1/5 sampled episodes,
-including cases with obviously irrelevant context where it clearly should
-have -- the same small-model reliability issue that already made us enforce
-retrieve_knowledge itself outside the agent rather than trust the model to
-remember. Filtering is cheap (a single forward pass per passage, no
-generation), so there is no real cost to always applying it.
+refine_search è stato RIMOSSO in questo ridisegno: su tre design
+indipendenti non ha mai alzato misurabilmente l'hit rate rispetto al solo
+retrieve_knowledge, e i tutor hanno chiesto di limitare i tool a 2-3. Con
+il recupero di documenti interi e il filtro fine per sezione, c'è già più
+materiale utilizzabile per documento, riducendo il bisogno di una seconda
+ricerca completa.
 
-All judgment-requiring text generation (guesses, re-guesses, the retrieval
-assessment) is delegated to dedicated, single-task, greedy Qwen calls, NOT
-written by the agent inside its own tool-call JSON -- writing a query while
-also producing tool-call syntax was found to measurably degrade quality.
+Tutta la generazione di testo che richiede giudizio (guesses, valutazione
+del bisogno di retrieval) è delegata a chiamate Qwen dedicate, greedy, a
+compito singolo -- non scritta dall'agente dentro il proprio JSON.
 
-EpisodeState enforces the intended step order programmatically (not just by
-instruction), since prompt-level ordering was found unreliable at model scale.
+EpisodeState forza l'ordine previsto a livello di codice, non solo di
+istruzione.
 """
-
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "common"))
 
 from PIL import Image
 from smolagents import Tool
-from qwen_vl_utils import process_vision_info
-
-from qwen_utils import generate_greedy
-from retriever_agent import RetrieverAgent
 
 GUESS_PROMPT = (
     "Analyze the main subject of this image. Provide your top 3 most probable "
@@ -41,18 +34,6 @@ GUESS_PROMPT = (
     "identity. Output ONLY a comma-separated list of these 3 names "
     "(e.g., Fuchsia magellanica, Hibiscus rosa-sinensis, Mandevilla sanderi). "
     "Do not write full sentences, background descriptions, or explanations."
-)
-
-REFINE_GUESS_PROMPT = (
-    "You are trying to identify the main subject of this image. A first "
-    "retrieval attempt returned the following context, which may be about the "
-    "WRONG entity:\n\n"
-    "{context}\n\n"
-    "Reconsider the image carefully. Provide your top 3 most probable guesses "
-    "for its specific proper name, biological species, or exact identity, "
-    "different from what the context above describes if that seems wrong. "
-    "Output ONLY a comma-separated list of these 3 names. "
-    "Do not write full sentences or explanations."
 )
 
 ASSESS_PROMPT_TEMPLATE = (
@@ -69,65 +50,32 @@ ASSESS_PROMPT_TEMPLATE = (
     "or precise detail) that you cannot recall with confidence."
 )
 
-REFINE_CONTEXT_CHARS = 1200
-
 
 class EpisodeState:
-    """Shared, per-episode state across all three tools."""
+    """Shared, per-episode state across both tools."""
     def __init__(self):
         self.has_assessed = False
         self.retrieval_recommended = None  # "RETRIEVE" | "ANSWER_DIRECTLY" | None
         self.has_retrieved = False
-        self.first_context = ""            # filtered context from the most recent retrieval
-        self.last_labeled_passages = []    # filtered list of (label, text)
-        self.filter_removed_all = False    # True if the last filtering pass emptied all passages
+        self.last_labeled_sections = []    # lista filtrata di (label, testo)
+        self.filter_removed_all = False    # True se il filtro ha scartato tutto
+        self.n_sections_before_filter = 0
+        self.n_sections_after_filter = 0
 
     def reset(self):
         self.has_assessed = False
         self.retrieval_recommended = None
         self.has_retrieved = False
-        self.first_context = ""
-        self.last_labeled_passages = []
+        self.last_labeled_sections = []
         self.filter_removed_all = False
+        self.n_sections_before_filter = 0
+        self.n_sections_after_filter = 0
 
 
-def _generate_dedicated(image: Image.Image, prompt_text: str, qwen_model, qwen_processor) -> str:
-    """
-    Dedicated, non-agentic, single-shot, GREEDY Qwen call. Not part of the
-    ReAct reasoning trace, does not consume an agent step. Used for guess
-    generation and the retrieval-need assessment alike. Reuses
-    qwen_utils.generate_greedy() for the actual generate+decode step, the
-    same helper used by every non-agentic RAG script.
-    """
-    messages = [{
-        "role": "user",
-        "content": [
-            {"type": "image", "image": image},
-            {"type": "text", "text": prompt_text},
-        ],
-    }]
-    text = qwen_processor.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=True
-    )
-    image_inputs, video_inputs = process_vision_info(messages)
-    inputs = qwen_processor(
-        text=[text], images=image_inputs, videos=video_inputs,
-        padding=True, return_tensors="pt",
-    ).to(qwen_model.device)
-
-    return generate_greedy(qwen_model, qwen_processor, inputs, max_new_tokens=40)
-
-
-def _filter_and_join(critic, image, question, labeled_passages):
-    """
-    Runs ReAG-Critic relevance filtering over labeled_passages and returns
-    (filtered_passages, filtered_context_string). Shared by
-    KnowledgeRetrievalTool and RefineSearchTool so both apply the exact same
-    automatic filtering step after retrieval.
-    """
-    filtered = critic.filter_passages(image, question, labeled_passages)
-    filtered_context = "\n\n".join(f"[{label}]\n{text}" for label, text in filtered)
-    return filtered, filtered_context
+def _generate_dedicated(image: Image.Image, prompt_text: str, model_wrapper) -> str:
+    """Chiamata dedicata, non-agentica, singola, greedy, instradata tramite
+    generate_plain() del wrapper -- indipendente dal backbone."""
+    return model_wrapper.generate_plain(image, prompt_text, max_new_tokens=40)
 
 
 class AssessRetrievalNeedTool(Tool):
@@ -146,11 +94,10 @@ class AssessRetrievalNeedTool(Tool):
     }
     output_type = "string"
 
-    def __init__(self, episode_state: EpisodeState, qwen_model, qwen_processor, **kwargs):
+    def __init__(self, episode_state: EpisodeState, model_wrapper, **kwargs):
         super().__init__(**kwargs)
         self.episode_state = episode_state
-        self.qwen_model = qwen_model
-        self.qwen_processor = qwen_processor
+        self.model_wrapper = model_wrapper
         self.current_image = None
         self.current_question = ""
 
@@ -166,11 +113,11 @@ class AssessRetrievalNeedTool(Tool):
 
         prompt = ASSESS_PROMPT_TEMPLATE.format(question=self.current_question)
         try:
-            raw = _generate_dedicated(self.current_image, prompt, self.qwen_model, self.qwen_processor)
+            raw = _generate_dedicated(self.current_image, prompt, self.model_wrapper)
         except Exception:
             raw = ""
 
-        decision = "RETRIEVE"  # conservative default on parse failure
+        decision = "RETRIEVE"  # default conservativo se il parsing fallisce
         if "ANSWER_DIRECTLY" in raw.upper() and "RETRIEVE" not in raw.upper():
             decision = "ANSWER_DIRECTLY"
 
@@ -189,13 +136,13 @@ class AssessRetrievalNeedTool(Tool):
 class KnowledgeRetrievalTool(Tool):
     name = "retrieve_knowledge"
     description = (
-        "Retrieves Wikipedia passages about the entity shown in the query "
-        "image. Internally generates candidate identity guesses from the "
-        "image and fuses them with your question to sharpen the search, and "
-        "automatically filters out irrelevant passages before returning them. "
+        "Retrieves FULL Wikipedia articles (all sections) about the entity "
+        "shown in the query image. Internally generates candidate identity "
+        "guesses from the image and fuses them with your question to "
+        "sharpen the search, then automatically selects only the individual "
+        "sections judged relevant to your question before returning them. "
         "REQUIRES that assess_retrieval_need has been called first. Calling "
-        "this again returns the exact same evidence. If the evidence seems to "
-        "be about the wrong entity, use refine_search."
+        "this again returns the exact same evidence."
     )
     inputs = {
         "reasoning": {
@@ -208,13 +155,11 @@ class KnowledgeRetrievalTool(Tool):
     }
     output_type = "string"
 
-    def __init__(self, retriever: RetrieverAgent, episode_state: EpisodeState,
-                 qwen_model, qwen_processor, critic, **kwargs):
+    def __init__(self, retriever, episode_state: EpisodeState, model_wrapper, critic, **kwargs):
         super().__init__(**kwargs)
         self.retriever = retriever
         self.episode_state = episode_state
-        self.qwen_model = qwen_model
-        self.qwen_processor = qwen_processor
+        self.model_wrapper = model_wrapper
         self.critic = critic
         self.current_image = None
         self.current_question = ""
@@ -237,125 +182,33 @@ class KnowledgeRetrievalTool(Tool):
             )
 
         try:
-            guesses = _generate_dedicated(
-                self.current_image, GUESS_PROMPT, self.qwen_model, self.qwen_processor
-            )
+            guesses = _generate_dedicated(self.current_image, GUESS_PROMPT, self.model_wrapper)
         except Exception:
             guesses = ""
 
         combined_query = f"Image tags: {guesses}. Question: {self.current_question}"
-        _raw_context, urls, labeled_passages = self.retriever.retrieve(
+        urls, labeled_sections = self.retriever.retrieve(
             self.current_image, query_text=combined_query, text_weight=0.3
         )
         self.retrieved_urls_log.extend(urls)
         self.episode_state.has_retrieved = True
+        self.episode_state.n_sections_before_filter = len(labeled_sections)
 
-        # Automatic relevance filtering (see module docstring for why this
-        # is no longer a separate, agent-discretionary tool).
-        filtered_passages, filtered_context = _filter_and_join(
-            self.critic, self.current_image, self.current_question, labeled_passages
-        )
-        self.episode_state.filter_removed_all = bool(labeled_passages) and not filtered_passages
-        self.episode_state.last_labeled_passages = filtered_passages
-        self.episode_state.first_context = filtered_context
+        # Filtro fine per sezione: ReAG-Critic valuta OGNI sezione
+        # individualmente (come nel suo esempio ufficiale), non l'intero
+        # documento multi-sezione come unico blocco.
+        filtered = self.critic.filter_passages(self.current_image, self.current_question, labeled_sections)
+        self.episode_state.n_sections_after_filter = len(filtered)
+        self.episode_state.filter_removed_all = bool(labeled_sections) and not filtered
+        self.episode_state.last_labeled_sections = filtered
 
-        if not filtered_context:
-            if labeled_passages:
+        if not filtered:
+            if labeled_sections:
                 return (
                     "Documents were retrieved, but a relevance filter judged "
-                    "all of them irrelevant to the question. Consider calling "
-                    "refine_search, or answering from the image alone."
+                    "all sections irrelevant to the question. Answer from "
+                    "the image and your own knowledge."
                 )
             return "No relevant documents were found in the knowledge base for this image."
-        return filtered_context
 
-
-class RefineSearchTool(Tool):
-    name = "refine_search"
-    description = (
-        "Requests a SECOND, different retrieval attempt when the first "
-        "evidence seemed to be about the wrong entity. You do NOT need to "
-        "provide a hypothesis: this tool reconsiders the image on its own, "
-        "using the first evidence as a hint about what was wrong, searches "
-        "again, and automatically filters out irrelevant passages. REQUIRES "
-        "that retrieve_knowledge has already been called. Call this AT MOST "
-        "ONCE, only if the first evidence looked incorrect."
-    )
-    inputs = {
-        "reasoning": {
-            "type": "string",
-            "description": (
-                "Briefly note why the first evidence seemed wrong. Only for "
-                "your reasoning trace."
-            ),
-        }
-    }
-    output_type = "string"
-
-    def __init__(self, retriever: RetrieverAgent, episode_state: EpisodeState,
-                 qwen_model, qwen_processor, critic, text_weight: float = 0.3, **kwargs):
-        super().__init__(**kwargs)
-        self.retriever = retriever
-        self.episode_state = episode_state
-        self.qwen_model = qwen_model
-        self.qwen_processor = qwen_processor
-        self.critic = critic
-        self.text_weight = text_weight
-        self.current_image = None
-        self.current_question = ""
-        self.retrieved_urls_log = []
-
-    def set_image(self, image: Image.Image):
-        self.current_image = image
-        self.retrieved_urls_log = []
-
-    def set_question(self, question: str):
-        self.current_question = question
-
-    def forward(self, reasoning: str) -> str:
-        if self.current_image is None:
-            return "Error: no query image is set for this episode."
-        if not self.episode_state.has_retrieved:
-            return (
-                "Error: you must call retrieve_knowledge first, before using "
-                "refine_search. Call retrieve_knowledge now."
-            )
-
-        first_ctx = self.episode_state.first_context[:REFINE_CONTEXT_CHARS]
-        prompt = REFINE_GUESS_PROMPT.format(context=first_ctx if first_ctx else "(no context retrieved)")
-        try:
-            guesses = _generate_dedicated(
-                self.current_image, prompt, self.qwen_model, self.qwen_processor
-            )
-        except Exception:
-            guesses = ""
-
-        combined_query = f"Image tags: {guesses}. Question: {self.current_question}"
-        _raw_context, urls, labeled_passages = self.retriever.retrieve(
-            self.current_image, query_text=combined_query, text_weight=self.text_weight
-        )
-        self.retrieved_urls_log.extend(urls)
-
-        # Automatic relevance filtering, same as retrieve_knowledge. Note
-        # this ALSO covers the case seen in testing where refine_search
-        # returns the exact same passages retrieve_knowledge already got
-        # (image dominates the fused query at text_weight=0.3, so a
-        # different textual hypothesis doesn't always shift the top-k) --
-        # previously those already-rejected passages could silently be
-        # reused by the agent without being re-filtered; now they always are.
-        filtered_passages, filtered_context = _filter_and_join(
-            self.critic, self.current_image, self.current_question, labeled_passages
-        )
-        self.episode_state.filter_removed_all = bool(labeled_passages) and not filtered_passages
-        self.episode_state.last_labeled_passages = filtered_passages
-        self.episode_state.first_context = filtered_context
-
-        if not filtered_context:
-            if labeled_passages:
-                return (
-                    "Documents were retrieved, but a relevance filter judged "
-                    "all of them irrelevant to the question as well. Consider "
-                    "answering from the image alone."
-                )
-            return "No relevant documents were found on the second attempt."
-        return filtered_context
+        return "\n\n".join(f"[{label}]\n{text}" for label, text in filtered)
