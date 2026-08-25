@@ -1,29 +1,35 @@
 """
-Shared retriever for the ReAct agent: a single EVA-CLIP-8B (vision+text)
-instance, used by both retrieval tools (retrieve_knowledge and
-refine_search) via a per-call `text_weight` override.
+Shared retriever for the ReAct agent: single EVA-CLIP-8B (vision+text)
+instance, used by retrieve_knowledge via a per-call `text_weight` override.
 
-retrieve() returns the individual labeled passages alongside the joined
-context string, so filter_context (see agent_tools.py) can score each
-source separately with ReAG-Critic.
+REDESIGNED per indicazione dei tutor: niente più troncamento a 4 sezioni /
+3000 caratteri per documento. Si recuperano TUTTE le sezioni dei top-k
+documenti, e sarà il critico (ReAG-Critic) a selezionare quali sezioni sono
+utili -- non noi a tagliare a monte. retrieve() restituisce quindi una
+lista FLAT di (label, testo_sezione), una entry PER SEZIONE su tutti i
+documenti, non una entry per documento intero -- esattamente come
+nell'esempio ufficiale di ReAG-Critic, che valuta singole sezioni
+("# Description:", "# Distribution:", ...) non articoli interi.
+
+Un tetto per-SEZIONE (non per-documento) resta come rete di sicurezza
+contro una singola sezione patologicamente lunga -- non è un troncamento
+di routine, ogni sezione viene comunque considerata.
 """
 
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "common"))
-
+import json
 import torch
 import faiss
-import json
 import numpy as np
 from PIL import Image
 from transformers import AutoModel, CLIPImageProcessor, AutoTokenizer
 
-from paths import INDEX_PATH, KNN_PATH, KB_PATH, CACHE_DIR
-
 EXCLUDE_SECTIONS = {"references", "external links", "see also", "notes"}
-MAX_SECTIONS = 4
-MAX_CONTEXT_CHARS = 3000
+MAX_SECTION_CHARS = 2000  # tetto di sicurezza su UNA sezione, non sul numero di sezioni
+
+INDEX_PATH = "/work/cvcs2026/encyclopedic/knn.index"
+KNN_PATH   = "/work/cvcs2026/encyclopedic/knn.json"
+KB_PATH    = "/work/cvcs2026/encyclopedic/encyclopedic_kb_wiki.json"
+CACHE_DIR  = "/work/cvcs2026/feature_extractors/dati_progetto/.cache_hf"
 
 
 class RetrieverAgent:
@@ -67,12 +73,7 @@ class RetrieverAgent:
         print("EVA-CLIP-8B loaded successfully.")
 
     def _embed_multimodal(self, image: Image.Image, text_query: str, text_weight: float) -> np.ndarray:
-        """
-        text_query: a SINGLE combined string (e.g. "Image tags: X. Question:
-        Y"), embedded in one call -- matching the static hypothesis-guided
-        fusion experiment. text_weight=0.0 forces pure image-only retrieval
-        (used by retrieve_knowledge's default first pass).
-        """
+        """text_query: a SINGLE combined string, embedded in one call."""
         processed = self.processor(images=image, return_tensors="pt")
         pixel_values = processed.pixel_values.to(dtype=torch.float16, device=self.device)
 
@@ -96,36 +97,34 @@ class RetrieverAgent:
 
         return combined_emb.cpu().numpy().astype("float32")
 
-    def _build_context(self, url: str) -> str:
+    def _get_all_sections(self, url: str, source_label: str) -> list:
         """
-        MAX_SECTIONS is intentionally lower here (4) than in
-        retriever_richcontext.py (8): raising it for the agent measurably
-        hurt score|hit at 1000-sample scale, since the agent already carries
-        tool-call reasoning overhead on top of reading the context.
-        MAX_CONTEXT_CHARS is an added safety cap per document, on top of
-        MAX_SECTIONS, kept as extra margin against oversized single sections.
+        Restituisce TUTTE le sezioni del documento a `url` (escluse
+        References/External links/See also/Notes), come lista di
+        (label, testo) -- una entry PER SEZIONE, non una per l'intero
+        documento. label include sia la fonte che il titolo della sezione,
+        es. "Source 1 - Description".
         """
         if url not in self.kb:
-            return ""
+            return []
 
         entry = self.kb[url]
         section_texts = entry.get("section_texts", [])
         section_titles = entry.get("section_titles", [""] * len(section_texts))
 
-        parts = []
+        sections = []
         for title, text in zip(section_titles, section_texts):
             if title.lower() in EXCLUDE_SECTIONS:
                 continue
-            if text.strip():
-                label = title.strip() if title.strip() else "Overview"
-                parts.append(f"[{label}] {text.strip()}")
-            if len(parts) >= MAX_SECTIONS:
-                break
+            if not text.strip():
+                continue
+            label_title = title.strip() if title.strip() else "Overview"
+            section_text = text.strip()
+            if len(section_text) > MAX_SECTION_CHARS:
+                section_text = section_text[:MAX_SECTION_CHARS] + " [...truncated]"
+            sections.append((f"{source_label} - {label_title}", section_text))
 
-        full_text = "\n".join(parts)
-        if len(full_text) > MAX_CONTEXT_CHARS:
-            full_text = full_text[:MAX_CONTEXT_CHARS] + " [...truncated]"
-        return full_text
+        return sections
 
     def retrieve(
         self,
@@ -133,7 +132,12 @@ class RetrieverAgent:
         query_text: str = "",
         text_weight: float = None,
     ) -> tuple:
-        """Returns (labeled_context: str, retrieved_urls: list, labeled_passages: list[(label, text)])."""
+        """
+        Restituisce (retrieved_urls: list, labeled_sections: list[(label, testo)]).
+        labeled_sections è FLAT su tutti i top_k documenti -- ogni sezione
+        di ogni documento è una entry a sé, pronta per essere filtrata
+        individualmente da ReAG-Critic.
+        """
         if text_weight is None:
             text_weight = self.text_weight
 
@@ -141,9 +145,9 @@ class RetrieverAgent:
         scores, indices = self.index.search(query_embedding, k=self.top_k)
 
         retrieved_urls = []
-        context_parts = []
+        labeled_sections = []
 
-        for idx in indices[0]:
+        for i, idx in enumerate(indices[0]):
             if idx == -1:
                 continue
             str_idx = str(idx)
@@ -151,12 +155,9 @@ class RetrieverAgent:
                 entry = self.knn[str_idx] if isinstance(self.knn, dict) else self.knn[int(idx)]
                 url = entry[0] if isinstance(entry, list) else entry
                 retrieved_urls.append(url)
-                context = self._build_context(url)
-                if context:
-                    context_parts.append(context)
+                source_label = f"Source {i + 1}"
+                labeled_sections.extend(self._get_all_sections(url, source_label))
             except Exception:
                 continue
 
-        labeled_passages = [(f"Source {i+1}", part) for i, part in enumerate(context_parts)]
-        labeled_context = "\n\n".join(f"[{label}]\n{part}" for label, part in labeled_passages)
-        return labeled_context, retrieved_urls, labeled_passages
+        return retrieved_urls, labeled_sections
