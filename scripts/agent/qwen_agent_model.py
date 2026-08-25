@@ -5,9 +5,11 @@ temperature, then coerce), which eliminated the ~34% hallucinated-tool
 episodes seen at 1000-sample scale. Uses light sampling (temperature=0.3)
 so byte-identical retries after an error don't reproduce the same output.
 
-Coercion target reflects the multi-stage pipeline (assess -> retrieve ->
-[refine] -> [filter] -> answer): falls back to the next step the episode
-still needs, based on episode_state.
+generate_plain() is a single-shot, no-tools, greedy generation method used
+by run_inference_agent.py's fallback functions and by agent_tools.py's
+dedicated calls (guesses, retrieval-need assessment, re-guess) -- kept as a
+wrapper method so those callers don't need to know which backbone
+(Qwen2.5-VL) is actually loaded.
 """
 
 import sys
@@ -28,15 +30,10 @@ ROLE_MAP = {
     "tool-call": "assistant", "tool-response": "user",
 }
 
-VALID_TOOL_NAMES = {
-    "assess_retrieval_need", "retrieve_knowledge", "refine_search",
-    "filter_context", "final_answer",
-}
+VALID_TOOL_NAMES = {"assess_retrieval_need", "retrieve_knowledge", "final_answer"}
 TOOL_ARG_KEY = {
     "assess_retrieval_need": "reasoning",
     "retrieve_knowledge": "reasoning",
-    "refine_search": "reasoning",
-    "filter_context": "reasoning",
     "final_answer": "answer",
 }
 NAME_PATTERN = re.compile(r'"name"\s*:\s*"([a-zA-Z_]+)"')
@@ -94,6 +91,11 @@ class QwenAgentModel(Model):
         self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             model_id, torch_dtype=torch.bfloat16, device_map="auto", cache_dir=CACHE_DIR,
         )
+        self.model.generation_config.do_sample = False
+        self.model.generation_config.temperature = None
+        self.model.generation_config.top_p = None
+        self.model.generation_config.top_k = None
+
         self.processor = AutoProcessor.from_pretrained(
             model_id, model_max_length=16384,
             min_pixels=256 * 28 * 28, max_pixels=1280 * 28 * 28, cache_dir=CACHE_DIR,
@@ -105,6 +107,32 @@ class QwenAgentModel(Model):
 
     def set_episode_state(self, episode_state):
         self.episode_state = episode_state
+
+    def generate_plain(self, image: Image.Image, prompt_text: str, max_new_tokens: int = 64) -> str:
+        """
+        Single-shot, no-tools, greedy generation -- backbone-agnostic entry
+        point used by run_inference_agent.py's fallbacks and by
+        agent_tools.py's dedicated (guess/assessment/re-guess) calls.
+        """
+        messages = [{"role": "user", "content": [
+            {"type": "image", "image": image},
+            {"type": "text", "text": prompt_text},
+        ]}]
+        text = self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        image_inputs, video_inputs = process_vision_info(messages)
+        inputs = self.processor(
+            text=[text], images=image_inputs, videos=video_inputs,
+            padding=True, return_tensors="pt",
+        ).to(self.model.device)
+        with torch.no_grad():
+            generated_ids = self.model.generate(
+                **inputs, max_new_tokens=max_new_tokens, do_sample=False,
+                temperature=None, top_p=None, top_k=None,
+            )
+        trimmed = [o[len(i):] for i, o in zip(inputs.input_ids, generated_ids)]
+        return self.processor.batch_decode(
+            trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
+        )[0].strip()
 
     def _generate_once(self, inputs, temperature: float) -> str:
         with torch.no_grad():
@@ -151,8 +179,6 @@ class QwenAgentModel(Model):
         output_text = self._generate_once(inputs, self.temperature)
         tool_name = _extract_tool_name(output_text)
 
-        # Internal retries do NOT count against the agent's max_steps: the
-        # framework never sees these intermediate invalid attempts.
         attempt = 0
         while (tool_name is not None and tool_name not in VALID_TOOL_NAMES
                and attempt < self.max_retries):
@@ -161,8 +187,6 @@ class QwenAgentModel(Model):
             output_text = self._generate_once(inputs, retry_temp)
             tool_name = _extract_tool_name(output_text)
 
-        # Last resort: coerce the model's own JSON text into a valid call,
-        # preserving whatever surrounding format it produced.
         if tool_name is not None and tool_name not in VALID_TOOL_NAMES:
             if self.episode_state is None or not self.episode_state.has_assessed:
                 target = "assess_retrieval_need"
