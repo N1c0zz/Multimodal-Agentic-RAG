@@ -65,9 +65,26 @@ class ReAGCritic:
         self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             CRITIC_MODEL_NAME,
             torch_dtype=torch.bfloat16,
-            device_map="auto",
             cache_dir=CACHE_DIR,
-        )
+        )  # niente device_map="auto" qui -- bypassa il dispatch di Accelerate
+        self.model = self.model.to("cuda" if torch.cuda.is_available() else "cpu")
+
+        # Workaround per un bug noto di transformers>=4.50 con l'architettura
+        # Qwen2.5-VL: il weight-tying automatico non lega correttamente lm_head.
+        input_embeddings = self.model.get_input_embeddings()
+        self.model.lm_head.weight = input_embeddings.weight
+
+        # Controllo permanente: verifica che la rilegatura sia DAVVERO efficace,
+        # non solo apparente. Con device_map="auto" e più modelli grandi in
+        # memoria, abbiamo il sospetto che Accelerate possa silenziosamente
+        # ripristinare il peso originale (rotto) a runtime -- questo controllo
+        # lo rivelerebbe subito nei log, invece di scoprirlo solo a posteriori
+        # guardando punteggi del critico palesemente sbagliati.
+        if not torch.equal(self.model.lm_head.weight.data, input_embeddings.weight.data):
+            print("WARNING: lm_head re-tie NON è efficace! I punteggi del critico saranno inutilizzabili.")
+        else:
+            print("lm_head correttamente legato agli embedding di input.")
+
         self.model.eval()
         print("ReAG-Critic loaded.")
 
