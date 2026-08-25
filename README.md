@@ -1,4 +1,4 @@
-# 🧠 MARAG: ReAct-based Multimodal RAG Pipeline
+# 🧠 ReAct-based Multimodal RAG Pipeline
 
 This repository implements a fully agentic, multimodal RAG system. The pipeline relies on a ReAct loop orchestrating Qwen2.5-VL-3B-Instruct, combined with Multimodal Query Fusion (EVA-CLIP) and Section-Level Relevance Filtering (ReAG-Critic).
 
