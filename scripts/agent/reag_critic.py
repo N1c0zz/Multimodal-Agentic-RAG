@@ -60,7 +60,9 @@ class ReAGCritic:
         self.yes_prob_threshold = yes_prob_threshold
         print("Loading ReAG-Critic (aimagelab/ReAG-Critic)...")
         self.processor = AutoProcessor.from_pretrained(
-            CRITIC_MODEL_NAME, padding_side="left", use_fast=True, cache_dir=CACHE_DIR,
+            CRITIC_MODEL_NAME, padding_side="left", use_fast=True, 
+            min_pixels=256 * 28 * 28, max_pixels=1280 * 28 * 28,
+            cache_dir=CACHE_DIR,
         )
         self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             CRITIC_MODEL_NAME,
