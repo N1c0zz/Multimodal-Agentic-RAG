@@ -28,10 +28,11 @@ istruzione.
 from PIL import Image
 from smolagents import Tool
 
-GUESS_PROMPT = (
-    "Analyze the main subject of this image. Provide your top 3 most probable "
-    "guesses for its specific proper name, biological species, or exact "
-    "identity. Output ONLY a comma-separated list of these 3 names "
+GUESS_PROMPT_TEMPLATE = (
+    "Look at this image and read the following question: '{question}'. "
+    "Identify the specific entity (e.g., proper name, biological species, building) "
+    "the question is asking about. Provide your top 3 most probable guesses for its identity. "
+    "Output ONLY a comma-separated list of these 3 names "
     "(e.g., Fuchsia magellanica, Hibiscus rosa-sinensis, Mandevilla sanderi). "
     "Do not write full sentences, background descriptions, or explanations."
 )
@@ -182,11 +183,12 @@ class KnowledgeRetrievalTool(Tool):
             )
 
         try:
-            guesses = _generate_dedicated(self.current_image, GUESS_PROMPT, self.model_wrapper)
+            rompt = GUESS_PROMPT_TEMPLATE.format(question=self.current_question)
+            guesses = _generate_dedicated(self.current_image, prompt, self.model_wrapper)
         except Exception:
             guesses = ""
 
-        combined_query = f"Image tags: {guesses}. Question: {self.current_question}"
+        combined_query = f"{guesses}"
         urls, labeled_sections = self.retriever.retrieve(
             self.current_image, query_text=combined_query, text_weight=0.3
         )
