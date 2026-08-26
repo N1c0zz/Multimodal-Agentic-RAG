@@ -27,7 +27,7 @@ from retriever_agent import RetrieverAgent
 from reag_critic import ReAGCritic
 from agent_tools import (
     AssessRetrievalNeedTool, KnowledgeRetrievalTool,
-    EpisodeState, _generate_dedicated, GUESS_PROMPT,
+    EpisodeState, _generate_dedicated, GUESS_PROMPT_TEMPLATE,
 )
 from qwen_agent_model import QwenAgentModel
 
@@ -188,8 +188,9 @@ def main():
             print(f"Forcing retrieval on {sample['unique_id']} (recommended or unassessed)")
             forced_retrieval = True; forced_retrieval_count += 1
             try:
-                guesses = _generate_dedicated(image, GUESS_PROMPT, model)
-                combined_query = f"Image tags: {guesses}. Question: {question}"
+                prompt = GUESS_PROMPT_TEMPLATE.format(question=question)
+                guesses = _generate_dedicated(image, prompt, model)
+                combined_query = f"{guesses}"
                 urls, labeled_sections = retriever.retrieve(image, query_text=combined_query, text_weight=args.text_weight)
                 tool_retrieve.retrieved_urls_log.extend(urls)
                 filtered = critic.filter_passages(image, question, labeled_sections)
