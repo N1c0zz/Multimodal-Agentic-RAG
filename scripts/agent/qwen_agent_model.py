@@ -1,15 +1,10 @@
 """
-Custom smolagents Model wrapping Qwen2.5-VL-3B-Instruct, with tool-name
-validation inside generate() (regenerate up to max_retries at rising
-temperature, then coerce), which eliminated the ~34% hallucinated-tool
-episodes seen at 1000-sample scale. Uses light sampling (temperature=0.3)
-so byte-identical retries after an error don't reproduce the same output.
+Custom smolagents Model wrapper for the Qwen2.5-VL architecture.
 
-generate_plain() is a single-shot, no-tools, greedy generation method used
-by run_inference_agent.py's fallback functions and by agent_tools.py's
-dedicated calls (guesses, retrieval-need assessment, re-guess) -- kept as a
-wrapper method so those callers don't need to know which backbone
-(Qwen2.5-VL) is actually loaded.
+Implements internal tool-name validation and regex-based coercion during the 
+generation phase. If an invalid tool is predicted, the wrapper automatically 
+regenerates the output with an incrementally scaled temperature (up to max_retries) 
+to mitigate tool hallucination issues commonly observed in smaller models.
 """
 
 import sys
@@ -110,9 +105,9 @@ class QwenAgentModel(Model):
 
     def generate_plain(self, image: Image.Image, prompt_text: str, max_new_tokens: int = 64) -> str:
         """
-        Single-shot, no-tools, greedy generation -- backbone-agnostic entry
-        point used by run_inference_agent.py's fallbacks and by
-        agent_tools.py's dedicated (guess/assessment/re-guess) calls.
+        Single-shot, no-tools, greedy generation method.
+        Acts as a backbone-agnostic entry point utilized by fallback routines
+        and dedicated hypothesis/assessment calls.
         """
         messages = [{"role": "user", "content": [
             {"type": "image", "image": image},
