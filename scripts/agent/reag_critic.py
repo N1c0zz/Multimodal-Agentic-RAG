@@ -1,10 +1,11 @@
 """
-Wraps aimagelab/ReAG-Critic, a Qwen2.5-VL-based passage relevance filter for
-KB-VQA (Compagnoni et al., CVPR 2026 Highlight), used as the underlying
-relevance judge for the agent's filter_context tool. Mirrors the official
-usage snippet from the model card exactly (same Qwen2_5_VLForConditionalGeneration
-class already used elsewhere in this project -- no new architecture/version
-dependency).
+Wrapper for the ReAG-Critic passage relevance filter.
+
+This module integrates a Qwen2.5-VL-based relevance classifier specifically 
+fine-tuned for Knowledge-Based Visual Question Answering (KB-VQA). It acts as 
+an impartial relevance judge for the agent's context, evaluating retrieved 
+passages section by section to maximize precision before the context is fed 
+to the reasoning backbone.
 """
 
 import sys
@@ -68,24 +69,20 @@ class ReAGCritic:
             CRITIC_MODEL_NAME,
             torch_dtype=torch.bfloat16,
             cache_dir=CACHE_DIR,
-        )  # niente device_map="auto" qui -- bypassa il dispatch di Accelerate
+        )  # device_map="auto" is intentionally omitted to bypass Accelerate's dispatch
         self.model = self.model.to("cuda" if torch.cuda.is_available() else "cpu")
 
-        # Workaround per un bug noto di transformers>=4.50 con l'architettura
-        # Qwen2.5-VL: il weight-tying automatico non lega correttamente lm_head.
+        # Architectural fix for a known issue in transformers >= 4.50 with Qwen2.5-VL:
+        # Automatic weight-tying fails to properly tie the lm_head to the embeddings.
         input_embeddings = self.model.get_input_embeddings()
         self.model.lm_head.weight = input_embeddings.weight
 
-        # Controllo permanente: verifica che la rilegatura sia DAVVERO efficace,
-        # non solo apparente. Con device_map="auto" e più modelli grandi in
-        # memoria, abbiamo il sospetto che Accelerate possa silenziosamente
-        # ripristinare il peso originale (rotto) a runtime -- questo controllo
-        # lo rivelerebbe subito nei log, invece di scoprirlo solo a posteriori
-        # guardando punteggi del critico palesemente sbagliati.
+        # Permanent validation: ensures the weight-tying is effectively applied in memory.
+        # This prevents silent failures where the critic's probabilities would be invalid.
         if not torch.equal(self.model.lm_head.weight.data, input_embeddings.weight.data):
-            print("WARNING: lm_head re-tie NON è efficace! I punteggi del critico saranno inutilizzabili.")
+            print("WARNING: lm_head re-tie is NOT effective! Critic scores will be invalid.")
         else:
-            print("lm_head correttamente legato agli embedding di input.")
+            print("lm_head successfully tied to input embeddings.")
 
         self.model.eval()
         print("ReAG-Critic loaded.")
@@ -117,8 +114,15 @@ class ReAGCritic:
 
     def filter_passages(self, image: Image.Image, question: str, labeled_passages: list) -> list:
         """
-        labeled_passages: list of (label, text) tuples, e.g. [("Source 1", "..."), ...]
-        Returns the filtered subset (same tuple format) scoring above threshold.
+        Evaluates a list of candidate passages and returns the relevant subset.
+
+        Args:
+            image (Image.Image): The query image.
+            question (str): The user's visual question.
+            labeled_passages (list): A list of tuples containing (source_label, text).
+
+        Returns:
+            list: The filtered subset of passages scoring above the probability threshold.
         """
         kept = []
         for label, text in labeled_passages:
