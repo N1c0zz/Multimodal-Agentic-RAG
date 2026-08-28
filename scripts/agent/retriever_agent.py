@@ -1,19 +1,15 @@
 """
-Shared retriever for the ReAct agent: single EVA-CLIP-8B (vision+text)
-instance, used by retrieve_knowledge via a per-call `text_weight` override.
+Multimodal Retrieval Agent module for the ReAct pipeline.
 
-REDESIGNED per indicazione dei tutor: niente più troncamento a 4 sezioni /
-3000 caratteri per documento. Si recuperano TUTTE le sezioni dei top-k
-documenti, e sarà il critico (ReAG-Critic) a selezionare quali sezioni sono
-utili -- non noi a tagliare a monte. retrieve() restituisce quindi una
-lista FLAT di (label, testo_sezione), una entry PER SEZIONE su tutti i
-documenti, non una entry per documento intero -- esattamente come
-nell'esempio ufficiale di ReAG-Critic, che valuta singole sezioni
-("# Description:", "# Distribution:", ...) non articoli interi.
+Implements a shared EVA-CLIP-8B (vision + text) retrieval instance connected 
+to a FAISS vector store. To maximize recall and decouple document retrieval 
+from context truncation, this module performs full-document retrieval for the 
+top-k candidates. It extracts and flattens all valid sections from the retrieved 
+documents into a granular list of (label, section_text) tuples.
 
-Un tetto per-SEZIONE (non per-documento) resta come rete di sicurezza
-contro una singola sezione patologicamente lunga -- non è un troncamento
-di routine, ogni sezione viene comunque considerata.
+This granular approach ensures that the external relevance critic evaluates 
+content at the individual section level rather than handling bloated, 
+multi-topic documents.
 """
 
 import json
@@ -24,7 +20,7 @@ from PIL import Image
 from transformers import AutoModel, CLIPImageProcessor, AutoTokenizer
 
 EXCLUDE_SECTIONS = {"references", "external links", "see also", "notes"}
-MAX_SECTION_CHARS = 2000  # tetto di sicurezza su UNA sezione, non sul numero di sezioni
+MAX_SECTION_CHARS = 2000  # Safety threshold per section, not a routine truncation
 
 INDEX_PATH = "/work/cvcs2026/encyclopedic/knn.index"
 KNN_PATH   = "/work/cvcs2026/encyclopedic/knn.json"
@@ -73,7 +69,9 @@ class RetrieverAgent:
         print("EVA-CLIP-8B loaded successfully.")
 
     def _embed_multimodal(self, image: Image.Image, text_query: str, text_weight: float) -> np.ndarray:
-        """text_query: a SINGLE combined string, embedded in one call."""
+        """
+        Embeds the image and the combined text string in a single multimodal fusion call.
+        """
         processed = self.processor(images=image, return_tensors="pt")
         pixel_values = processed.pixel_values.to(dtype=torch.float16, device=self.device)
 
@@ -99,11 +97,9 @@ class RetrieverAgent:
 
     def _get_all_sections(self, url: str, source_label: str) -> list:
         """
-        Restituisce TUTTE le sezioni del documento a `url` (escluse
-        References/External links/See also/Notes), come lista di
-        (label, testo) -- una entry PER SEZIONE, non una per l'intero
-        documento. label include sia la fonte che il titolo della sezione,
-        es. "Source 1 - Description".
+        Extracts all valid sections from the given document URL (excluding non-content 
+        sections like References or Notes). Returns a granular list of tuples, 
+        where each entry represents a single section rather than an entire document.
         """
         if url not in self.kb:
             return []
@@ -133,10 +129,13 @@ class RetrieverAgent:
         text_weight: float = None,
     ) -> tuple:
         """
-        Restituisce (retrieved_urls: list, labeled_sections: list[(label, testo)]).
-        labeled_sections è FLAT su tutti i top_k documenti -- ogni sezione
-        di ogni documento è una entry a sé, pronta per essere filtrata
-        individualmente da ReAG-Critic.
+        Executes the multimodal search and returns the top-k results.
+        
+        Returns:
+            tuple: (retrieved_urls, labeled_sections)
+            - retrieved_urls: A list of unique document URLs.
+            - labeled_sections: A flat list of (label, text) tuples encompassing 
+              every valid section across all retrieved top-k documents.
         """
         if text_weight is None:
             text_weight = self.text_weight
