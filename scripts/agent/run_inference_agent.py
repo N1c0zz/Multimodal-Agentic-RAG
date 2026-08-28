@@ -1,15 +1,14 @@
 """
-ReAct agentic inference con pipeline a 2 tool (+ final_answer nativo), per
-indicazione dei tutor: recuperare documenti INTERI, lasciare che un filtro
-fine per sezione selezioni il rilevante, e limitare i tool a 2-3.
-refine_search è stato rimosso (vedi il docstring di agent_tools.py).
+ReAct agentic inference orchestrator.
 
-FIXED: le risposte finali "bail-out" (Unknown, I don't know, ecc.) vengono
-ora intercettate a livello di codice e sostituite con plain_vlm_fallback,
-esattamente come già succedeva per le risposte vuote. Un'istruzione nel
-prompt che vietava questo comportamento era stata provata in precedenza e
-non aveva funzionato -- coerente con ogni altro problema di affidabilità
-di questo modello, risolto solo intercettando il comportamento nel codice.
+Executes a highly constrained 2-tool agentic loop designed for knowledge-grounded 
+visual question answering. The pipeline enforces full-document retrieval combined 
+with section-level filtering. 
+
+It implements a code-level interception mechanism (Fallback Interceptor) that 
+detects "bail-out" responses (e.g., "Unknown", "I don't know") triggered by empty 
+or fully-filtered contexts. In such cases, the agent's prediction is overridden 
+by a robust plain-VLM fallback, ensuring graceful degradation under uncertainty.
 """
 
 import sys
@@ -42,13 +41,13 @@ BAILOUT_PATTERNS = [
 
 
 def _is_bailout(prediction: str) -> bool:
+    """Detects whether the model's answer is an explicit admission of ignorance."""
     if not prediction or not prediction.strip():
         return True
     normalized = prediction.strip().lower()
     if len(normalized) > 60:
-        # risposte lunghe difficilmente sono un puro bail-out; evita falsi
-        # positivi su risposte legittime che contengono per caso una di
-        # queste parole (es. "origine sconosciuta, regione...")
+        # Long responses are unlikely to be pure bail-outs; this prevents 
+        # false positives on legitimate answers containing these exact substrings.
         return False
     return any(p in normalized for p in BAILOUT_PATTERNS)
 
