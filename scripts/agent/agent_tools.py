@@ -1,28 +1,16 @@
 """
-smolagents Tools for the ReAct agent -- 2 tool (+ final_answer nativo),
-per indicazione dei tutor di limitare il numero di tool (più tool
-confondevano misurabilmente questo modello da 3B nelle versioni precedenti):
-- assess_retrieval_need: decide RETRIEVE vs ANSWER_DIRECTLY, sempre primo.
-- retrieve_knowledge: recupera documenti INTERI (tutte le sezioni, non
-  troncate) per i top-k candidati, poi lascia che ReAG-Critic selezioni
-  quali singole SEZIONI sono rilevanti -- filtro fine sul testo completo,
-  invece di troncare a monte sperando che la sezione utile sopravviva.
-  Rispecchia l'esempio ufficiale di ReAG-Critic, che valuta sezioni
-  individuali, non articoli interi.
+Tools definition for the multimodal ReAct agent.
 
-refine_search è stato RIMOSSO in questo ridisegno: su tre design
-indipendenti non ha mai alzato misurabilmente l'hit rate rispetto al solo
-retrieve_knowledge, e i tutor hanno chiesto di limitare i tool a 2-3. Con
-il recupero di documenti interi e il filtro fine per sezione, c'è già più
-materiale utilizzabile per documento, riducendo il bisogno di una seconda
-ricerca completa.
+This module provides the customized toolset for the agentic loop, strictly limited
+to two core tools to optimize reliability and reduce the cognitive load on the backbone:
+- assess_retrieval_need: Evaluates the query to decide between external retrieval 
+  and direct answering. It is enforced as the first action of the episode.
+- retrieve_knowledge: Performs multimodal query expansion, retrieves full documents, 
+  and delegates relevance filtering to an external critic at the section level.
 
-Tutta la generazione di testo che richiede giudizio (guesses, valutazione
-del bisogno di retrieval) è delegata a chiamate Qwen dedicate, greedy, a
-compito singolo -- non scritta dall'agente dentro il proprio JSON.
-
-EpisodeState forza l'ordine previsto a livello di codice, non solo di
-istruzione.
+Tasks requiring domain-specific judgment (e.g., generating hypotheses or assessing 
+retrieval needs) are delegated to dedicated, single-task greedy calls, preventing 
+interference with the agent's tool-calling JSON structure.
 """
 
 from PIL import Image
@@ -53,13 +41,13 @@ ASSESS_PROMPT_TEMPLATE = (
 
 
 class EpisodeState:
-    """Shared, per-episode state across both tools."""
+    """Shared, per-episode state tracking across the agent's toolset."""
     def __init__(self):
         self.has_assessed = False
         self.retrieval_recommended = None  # "RETRIEVE" | "ANSWER_DIRECTLY" | None
         self.has_retrieved = False
-        self.last_labeled_sections = []    # lista filtrata di (label, testo)
-        self.filter_removed_all = False    # True se il filtro ha scartato tutto
+        self.last_labeled_sections = []    # Filtered list of (label, text) tuples
+        self.filter_removed_all = False    # True if the critic filtered out all retrieved sections
         self.n_sections_before_filter = 0
         self.n_sections_after_filter = 0
 
@@ -74,8 +62,11 @@ class EpisodeState:
 
 
 def _generate_dedicated(image: Image.Image, prompt_text: str, model_wrapper) -> str:
-    """Chiamata dedicata, non-agentica, singola, greedy, instradata tramite
-    generate_plain() del wrapper -- indipendente dal backbone."""
+    """
+    Dedicated, non-agentic, single-shot greedy generation.
+    Routes the request through the wrapper's plain generation method, keeping 
+    the internal reasoning step independent from the main agent backbone.
+    """
     return model_wrapper.generate_plain(image, prompt_text, max_new_tokens=40)
 
 
@@ -118,7 +109,7 @@ class AssessRetrievalNeedTool(Tool):
         except Exception:
             raw = ""
 
-        decision = "RETRIEVE"  # default conservativo se il parsing fallisce
+        decision = "RETRIEVE"  # Conservative default if parsing fails
         if "ANSWER_DIRECTLY" in raw.upper() and "RETRIEVE" not in raw.upper():
             decision = "ANSWER_DIRECTLY"
 
@@ -183,7 +174,7 @@ class KnowledgeRetrievalTool(Tool):
             )
 
         try:
-            rompt = GUESS_PROMPT_TEMPLATE.format(question=self.current_question)
+            prompt = GUESS_PROMPT_TEMPLATE.format(question=self.current_question)
             guesses = _generate_dedicated(self.current_image, prompt, self.model_wrapper)
         except Exception:
             guesses = ""
@@ -196,9 +187,8 @@ class KnowledgeRetrievalTool(Tool):
         self.episode_state.has_retrieved = True
         self.episode_state.n_sections_before_filter = len(labeled_sections)
 
-        # Filtro fine per sezione: ReAG-Critic valuta OGNI sezione
-        # individualmente (come nel suo esempio ufficiale), non l'intero
-        # documento multi-sezione come unico blocco.
+        # Section-level filtering: The critic evaluates each section individually
+        # rather than the entire multi-section document as a single block.
         filtered = self.critic.filter_passages(self.current_image, self.current_question, labeled_sections)
         self.episode_state.n_sections_after_filter = len(filtered)
         self.episode_state.filter_removed_all = bool(labeled_sections) and not filtered
