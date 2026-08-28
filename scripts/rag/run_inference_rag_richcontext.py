@@ -1,7 +1,10 @@
 """
-RAG inference with richer, labeled context (more sections, section titles,
-clearer document boundaries). No re-ranking -- isolates the effect
-of richer context alone on top of the base FAISS retrieval.
+Rich Context RAG Inference Pipeline.
+
+Executes a standard single-pass visual retrieval setup, but structures the resulting 
+context with section titles and distinct document boundaries (e.g., source labels). 
+It evaluates the impact of augmented context formatting on language model generation 
+in isolation, omitting query fusion or re-ranking mechanisms.
 """
 
 import sys
@@ -28,6 +31,7 @@ def run_inference(
     retriever: RetrieverRichContext,
     image: Image.Image,
 ) -> tuple[str, list[str]]:
+    """Executes the rich-context inference pipeline for a single sample."""
     image_path = str(IMAGE_ROOT / sample["related_images"])
 
     context, retrieved_urls = retriever.retrieve(image)
@@ -43,6 +47,7 @@ def run_inference(
             "Do not explain or use full sentences."
         )
     else:
+        # Fallback prompt structure when retrieval yields an empty context
         prompt_text = (
             f"{sample['question']}\n\n"
             "Answer with the shortest possible response: "

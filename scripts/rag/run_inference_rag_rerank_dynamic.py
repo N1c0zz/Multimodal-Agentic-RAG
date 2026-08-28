@@ -1,5 +1,11 @@
 """
-RAG inference with caption-based re-ranking and dynamic top-k selection.
+Dynamic Re-ranking RAG Inference Pipeline.
+
+Integrates a two-stage retrieval mechanism with confidence-adaptive context selection.
+The pipeline retrieves a broad candidate set, generates a visual caption to perform
+cross-modal re-ranking, and dynamically restricts the context to the top-1 document 
+if the confidence margin exceeds a defined threshold. This approach aims to reduce 
+contextual noise in unambiguous retrieval scenarios.
 """
 
 import sys
@@ -26,10 +32,11 @@ def run_inference(
     retriever: RetrieverRerankDynamic,
     image: Image.Image,
 ) -> tuple[str, bool, list[str]]:
+    """Executes the dynamic re-ranking inference pipeline for a single sample."""
     image_path = str(IMAGE_ROOT / sample["related_images"])
 
-    # caption is generated internally by the retriever for re-ranking; not
-    # needed here since it isn't part of the final answer prompt.
+    # The visual caption is generated internally by the retriever for the re-ranking 
+    # process and is discarded here, as it is not injected into the final QA prompt.
     context, top_urls, _caption, high_confidence = retriever.retrieve_rerank(
         image, sample["question"], model, processor
     )
@@ -45,6 +52,7 @@ def run_inference(
             "Do not explain or use full sentences."
         )
     else:
+        # Fallback prompt structure when retrieval yields an empty context
         prompt_text = (
             f"{sample['question']}\n\n"
             "Answer with the shortest possible response: "

@@ -1,14 +1,15 @@
 """
-Combined RAG Inference Script: Multi-Hypothesis Fusion Retrieval + Rich Context.
+Combined RAG Inference Pipeline.
 
-Stage 1 (Hypothesis Generation): Qwen generates top-3 taxonomic guesses for the image.
-Stage 2 (Hybrid Retrieval): Fuses image + (guesses + question) text embedding via
-                             weighted EVA-CLIP, retrieves top-k rich, labeled context.
-Stage 3 (Final QA): Qwen answers using image + question + retrieved context.
-
-Already used the standard oracle-URL evidence_in_context method -- no logic
-change needed here beyond centralization. Removed a leftover per-sample
-[DEBUG] print statement.
+Integrates Multi-Hypothesis Fusion Retrieval with Rich Context formatting.
+The pipeline operates in three consecutive stages:
+1. Hypothesis Generation: A dedicated VLM pass generates the top-3 taxonomic 
+   or identity guesses based purely on the visual input.
+2. Hybrid Retrieval: The image and a query string (fusing the guesses and the 
+   user question) are embedded via weighted EVA-CLIP to retrieve the top-k 
+   documents, which are then formatted into a rich, labeled context.
+3. Final QA: The VLM synthesizes the final answer conditioned on the image, 
+   the user question, and the structured retrieved context.
 """
 
 import sys
@@ -36,10 +37,11 @@ GUESS_PROMPT = (
 
 
 def run_inference(sample: dict, model, processor, retriever: Retriever, image: Image.Image) -> tuple[str, list[str]]:
+    """Executes the full 3-stage inference pipeline for a single sample."""
     image_path = str(IMAGE_ROOT / sample["related_images"])
     question = sample["question"]
 
-    # Stage 1 -- Hypothesis generation
+    # Stage 1: Hypothesis Generation
     messages_p1 = [
         {
             "role": "user",
@@ -56,11 +58,11 @@ def run_inference(sample: dict, model, processor, retriever: Retriever, image: I
     ).to("cuda")
     guesses = generate_greedy(model, processor, inputs_p1, max_new_tokens=40)
 
-    # Stage 2 -- Hybrid retrieval (fused embedding + rich context)
+    # Stage 2: Hybrid Retrieval (Fused Embedding + Rich Context)
     combined_query = f"Image tags: {guesses}. Question: {question}"
     context, retrieved_urls = retriever.retrieve(image, query_text=combined_query)
 
-    # Stage 3 -- Final QA
+    # Stage 3: Final QA Synthesis
     if context:
         prompt_text = (
             f"Context:\n{context}\n\n"

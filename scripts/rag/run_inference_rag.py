@@ -1,8 +1,11 @@
 """
-RAG inference script for Qwen2.5-VL-3B-Instruct.
-For each sample: embeds the query image with EVA-CLIP-8B, retrieves
-the top-k most similar Wikipedia documents from the FAISS index,
-and passes the retrieved context to Qwen to answer the question.
+Baseline RAG Inference Pipeline.
+
+Implements the fundamental single-pass retrieval-augmented generation workflow.
+For each query, the image is embedded using EVA-CLIP-8B to perform a visual 
+similarity search across the FAISS index. The concatenated raw text from the 
+top-k retrieved Wikipedia documents is then provided as context to the VLM 
+for final answer synthesis.
 """
 
 import sys
@@ -29,6 +32,7 @@ def run_inference(
     retriever: Retriever,
     image: Image.Image,
 ) -> tuple[str, list[str]]:
+    """Executes the standard RAG inference pipeline for a single sample."""
     image_path = str(IMAGE_ROOT / sample["related_images"])
 
     context, retrieved_urls = retriever.retrieve(image)
@@ -42,7 +46,7 @@ def run_inference(
             "Do not explain or use full sentences."
         )
     else:
-        # No context retrieved: fall back to a plain-VLM-style prompt.
+        # Fallback to zero-shot VLM capability if no context is retrieved
         prompt_text = (
             f"{sample['question']}\n\n"
             "Answer with the shortest possible response: "

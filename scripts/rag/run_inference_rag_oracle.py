@@ -1,18 +1,14 @@
 """
-RAG Oracle inference script for Qwen2.5-VL-3B-Instruct.
-Uses the pre-retrieved context (section_texts) already present in the dataset
-to augment the prompt with relevant Wikipedia passages before answering.
-This is an oracle RAG baseline: retrieval is not performed at inference time,
-but is taken directly from the dataset annotations -- it measures an upper
-bound on how well Qwen can use CORRECT context, decoupled from retrieval
-quality.
+Oracle RAG Inference Baseline.
 
-NOTE: this script has no FAISS retrieval and therefore no retrieved_urls to
-compare against an oracle URL. evidence_in_context here is computed by
-checking whether the reference answer text literally appears in the given
-context (see eval_utils.compute_evidence_in_context_by_answer_match) -- a
-different method than every other RAG script in this project, which check
-oracle-URL membership instead. The two are not directly comparable.
+Evaluates an upper-bound scenario for context utilization by bypassing standard 
+vector-store retrieval. Instead, it extracts the pre-retrieved oracle Wikipedia 
+passages directly annotated within the dataset and feeds them as context.
+
+Note on metrics: Since no runtime URL retrieval occurs, evidence containment 
+must be evaluated using a substring-matching proxy 
+(`compute_evidence_in_context_by_answer_match`) rather than the strict URL-based 
+check utilized in actual retrieval pipelines.
 """
 
 import sys
@@ -34,12 +30,15 @@ MAX_SECTIONS = 4
 
 
 def build_context(sample: dict) -> str:
-    """Extract and concatenate relevant section_texts from the dataset's own 'retrieval' field."""
+    """
+    Extracts and concatenates relevant textual sections directly from the 
+    dataset's annotated oracle 'retrieval' field.
+    """
     retrieval_list = sample.get('retrieval', [])
     if not retrieval_list:
         return ""
 
-    # The dataset has one retrieval entry per sample.
+    # The dataset schema provides a single optimal retrieval entry per sample
     retrieval = retrieval_list[0]
     section_texts = retrieval.get('section_texts', [])
     section_titles = retrieval.get('section_titles', [])
@@ -57,8 +56,11 @@ def build_context(sample: dict) -> str:
 
 
 def run_inference(sample: dict, model, processor) -> tuple[str, bool]:
+    """Generates an answer given the image, question, and oracle context."""
     image_path = str(IMAGE_ROOT / sample['related_images'])
     context = build_context(sample)
+    
+    # Employs string-matching heuristic to verify evidence presence
     evidence_in_context = compute_evidence_in_context_by_answer_match(sample, context)
 
     if context:
@@ -70,7 +72,7 @@ def run_inference(sample: dict, model, processor) -> tuple[str, bool]:
             "Do not explain or use full sentences."
         )
     else:
-        # Fallback to plain VLM if no context available for this sample.
+        # Fallback to plain zero-shot VLM capability if oracle context is empty
         prompt_text = (
             f"{sample['question']}\n\n"
             "Answer with the shortest possible response: "
@@ -128,8 +130,8 @@ def main():
             prediction = ""
             has_evidence = False
 
-        # retrieved_urls=None (no real retrieval here): pass the
-        # substring-based evidence flag via extra_fields instead.
+        # retrieved_urls=None since no runtime vector search is performed.
+        # The boolean proxy flag is passed via extra_fields.
         results.append(build_result_record(
             sample, prediction,
             extra_fields={"evidence_in_context": has_evidence},

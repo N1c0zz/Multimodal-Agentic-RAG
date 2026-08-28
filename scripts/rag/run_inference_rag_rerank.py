@@ -1,16 +1,16 @@
 """
-RAG inference with caption-based re-ranking.
-Pipeline per sample:
-  1. EVA-CLIP embeds query image -> FAISS top-10
-  2. Qwen generates a caption of the query image
-  3. EVA-CLIP text encoder embeds the caption and doc texts
-  4. Re-rank the top-10 candidates by combining visual + textual scores
-  5. Qwen answers using the top-3 re-ranked docs as context
+Caption-Based Re-ranking RAG Inference Pipeline.
 
-Note: unlike the other RAG scripts, retriever_rerank's caption generation
-step needs the Qwen model/processor directly (it runs its own greedy
-generate() call internally), so it is passed into retrieve_rerank() below
-rather than only used by this script's own run_inference().
+Executes a two-stage visual-question answering workflow per sample:
+1. Retrieval: Embeds the query image using EVA-CLIP and fetches the top-N candidates.
+2. Re-ranking: A VLM generates a descriptive visual caption of the query image, 
+   which is subsequently embedded alongside the candidate texts to re-rank the 
+   documents based on a combined visual-textual similarity score.
+3. QA Synthesis: The VLM generates a short-form answer using the top-k re-ranked 
+   documents as context.
+
+Unlike basic RAG pipelines, this script passes the initialized VLM and processor 
+into the retriever class to perform the internal caption generation step.
 """
 
 import sys
@@ -37,10 +37,11 @@ def run_inference(
     retriever: RetrieverRerank,
     image: Image.Image,
 ) -> tuple[str, list[str]]:
+    """Executes the re-ranking inference pipeline for a single sample."""
     image_path = str(IMAGE_ROOT / sample["related_images"])
 
-    # caption is generated internally by the retriever for re-ranking; not
-    # needed here since it isn't part of the final answer prompt.
+    # The visual caption is generated internally by the retriever for the re-ranking 
+    # process and is discarded here, as it is not injected into the final QA prompt.
     context, top_urls, _caption = retriever.retrieve_rerank(
         image, sample["question"], model, processor
     )
@@ -56,6 +57,7 @@ def run_inference(
             "Do not explain or use full sentences."
         )
     else:
+        # Fallback prompt structure when retrieval yields an empty context
         prompt_text = (
             f"{sample['question']}\n\n"
             "Answer with the shortest possible response: "

@@ -1,24 +1,13 @@
 """
-Two-Stage Multimodal RAG Inference Script (Double-Pass).
+Multi-Hypothesis RAG Inference Pipeline (Double-Pass).
 
-Stage 1 (Hypothesis Generation): Qwen generates its top-3 taxonomic guesses
-                                  for the entity shown in the image.
-Stage 2 (Hybrid Retrieval): Embeds the image and the generated guesses +
-                             question, fuses them, and retrieves top-k
-                             context passages from the FAISS index.
-Stage 3 (Final QA): Feeds the image, question, and retrieved context back to
-                     Qwen to generate a short-form answer.
-
-FIXED during repo cleanup: evidence_in_context now uses the same oracle-URL
-matching method as every other RAG script (eval_utils.compute_evidence_in_context),
-instead of a substring match on the answer text. This script DOES perform
-real FAISS retrieval (retriever.retrieve() already returns retrieved_urls),
-so there was no reason for it to use the weaker, differently-scaled
-substring method -- that made its reported hit rate not directly comparable
-to the other rows of the results table. If you need the historical number
-for comparison, re-run this script and check the new hit rate against the
-previously reported 25.9%.
-Also removed a leftover per-sample [DEBUG] print statement.
+Implements a 3-stage visual-question answering workflow leveraging multimodal 
+query expansion prior to retrieval.
+1. Hypothesis Generation: Evaluates the visual input to predict candidate identities.
+2. Hybrid Retrieval: Constructs a multimodal query by fusing the image with the 
+   generated hypotheses and the user's question, extracting context from FAISS.
+3. Final QA: Combines the query image, user question, and the raw concatenated 
+   textual context to generate a factual, short-form answer.
 """
 
 import sys
@@ -46,10 +35,11 @@ GUESS_PROMPT = (
 
 
 def run_inference(sample: dict, model, processor, retriever: Retriever, image: Image.Image) -> tuple[str, list[str]]:
+    """Executes the double-pass inference pipeline for a single sample."""
     image_path = str(IMAGE_ROOT / sample["related_images"])
     question = sample["question"]
 
-    # Stage 1 -- Hypothesis generation
+    # Stage 1: Hypothesis Generation
     messages_p1 = [
         {
             "role": "user",
@@ -66,11 +56,11 @@ def run_inference(sample: dict, model, processor, retriever: Retriever, image: I
     ).to("cuda")
     guesses = generate_greedy(model, processor, inputs_p1, max_new_tokens=40)
 
-    # Stage 2 -- Hybrid retrieval (fused image + guesses + question embedding)
+    # Stage 2: Hybrid Retrieval (Fused Image + Guesses + Question Embedding)
     combined_query = f"Image tags: {guesses}. Question: {question}"
     context, retrieved_urls = retriever.retrieve(image, query_text=combined_query)
 
-    # Stage 3 -- Final QA
+    # Stage 3: Final QA Synthesis
     if context:
         prompt_text = (
             f"Here is some relevant context:\n{context}\n\n"
