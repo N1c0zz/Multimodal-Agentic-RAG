@@ -1,7 +1,17 @@
 """
-Retriever with caption-based re-ranking and dynamic top-k selection.
-If the top-1 candidate has a clear confidence margin over the second,
-only that document is used. Otherwise, the top-k documents are used.
+Dynamic Re-ranking Retriever.
+
+Implements a two-stage retrieval pipeline with caption-based re-ranking 
+and dynamic top-k selection. The pipeline operates as follows:
+1. Performs an initial image-based retrieval to extract top-k candidates.
+2. Generates a descriptive caption of the query image using a dedicated VLM.
+3. Computes textual similarity between the caption and the candidates' texts.
+4. Linearly combines visual and textual scores to re-rank the candidates.
+
+It introduces a confidence-adaptive threshold: if the re-ranked top-1 candidate 
+exhibits a sufficient score margin over the second candidate, the context is 
+restricted exclusively to the top-1 document, dynamically reducing noise 
+in high-confidence scenarios.
 """
 
 import torch
@@ -30,16 +40,15 @@ class RetrieverRerankDynamic(Retriever):
         self.top_k_retrieval = top_k_retrieval
         self.alpha = alpha
         self.confidence_threshold = confidence_threshold
-        # keep_text_encoder=True: see the note in RetrieverRerank.__init__.
+        # Retain the text encoder in memory to enable subsequent caption embedding
         super().__init__(top_k=top_k_retrieval, keep_text_encoder=True)
         self.top_k_final = top_k
         self._load_text_encoder()
 
     def _load_text_encoder(self):
         """
-        Loads only the tokenizer. The text encoder itself is self.model
-        (already loaded by the base class with keep_text_encoder=True) --
-        no second EVA-CLIP-8B copy is loaded.
+        Initializes the tokenizer. Reuses the already loaded EVA-CLIP-8B model 
+        from the base class for text encoding to optimize VRAM utilization.
         """
         print("Loading EVA-CLIP tokenizer...")
         self.tokenizer = AutoTokenizer.from_pretrained(
@@ -50,6 +59,7 @@ class RetrieverRerankDynamic(Retriever):
         print("Tokenizer loaded (reusing the shared EVA-CLIP-8B model for text encoding).")
 
     def _embed_text(self, text: str) -> np.ndarray:
+        """Computes the L2-normalized text embedding using EVA-CLIP."""
         tokens = self.tokenizer(
             text,
             return_tensors="pt",
@@ -65,6 +75,7 @@ class RetrieverRerankDynamic(Retriever):
         return embedding.cpu().numpy().astype("float32")
 
     def _generate_caption(self, image: Image.Image, qwen_model, qwen_processor) -> str:
+        """Generates a descriptive caption of the query image via the backbone VLM."""
         messages = [
             {
                 "role": "user",
@@ -108,6 +119,7 @@ class RetrieverRerankDynamic(Retriever):
         return caption
 
     def _cosine_similarity(self, a: np.ndarray, b: np.ndarray) -> float:
+        """Computes the cosine similarity between two normalized vectors."""
         return float(np.dot(a.flatten(), b.flatten()))
 
     def retrieve_rerank(
@@ -117,7 +129,12 @@ class RetrieverRerankDynamic(Retriever):
         qwen_model,
         qwen_processor,
     ) -> tuple[str, list[str], str, bool]:
-        """Returns (joined_context, top_urls, generated_caption, high_confidence)."""
+        """
+        Executes the two-stage retrieval and dynamic re-ranking process.
+        
+        Returns:
+            tuple: (joined_context, top_urls, generated_caption, high_confidence_flag)
+        """
         query_image_embedding = self._embed_image(image)
         visual_scores, indices = self.index.search(
             query_image_embedding, k=self.top_k_retrieval
@@ -156,8 +173,8 @@ class RetrieverRerankDynamic(Retriever):
 
         candidates.sort(key=lambda x: x["final_score"], reverse=True)
 
-        # Dynamic selection: fall back to a single top-1 result only when the
-        # margin over the second candidate is large enough to trust it alone.
+        # Dynamic selection: restrict the context to the top-1 result if the 
+        # confidence margin over the second candidate exceeds the defined threshold.
         high_confidence = False
         if len(candidates) >= 2:
             gap = candidates[0]["final_score"] - candidates[1]["final_score"]

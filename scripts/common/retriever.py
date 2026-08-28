@@ -1,8 +1,13 @@
 """
-Base retriever module for the RAG pipeline.
-Uses EVA-CLIP-8B to embed the query image and searches the pre-built FAISS
-index. This is the parent class for the re-ranking variants
-(retriever_rerank.py, retriever_rerank_dynamic.py).
+Base Retriever Module.
+
+Provides the foundational image-only retrieval logic for the RAG pipeline.
+It utilizes the EVA-CLIP-8B vision encoder to map visual queries into the 
+shared latent space and performs similarity search against the pre-built FAISS index.
+
+This class serves as the parent architecture for more complex variants 
+(e.g., RetrieverRerank, RetrieverRerankDynamic), managing the initialization 
+of the knowledge base, vector store, and deep learning models.
 """
 
 import json
@@ -21,12 +26,13 @@ MAX_SECTIONS = 4
 class Retriever:
     def __init__(self, top_k: int = 3, keep_text_encoder: bool = False):
         """
-        keep_text_encoder: if False (default, used for plain image-only
-        retrieval), the text encoder is dropped after loading to save VRAM.
-        Subclasses that also need encode_text() (RetrieverRerank,
-        RetrieverRerankDynamic) pass True here so they can reuse THIS single
-        loaded model for text embedding, instead of loading a second, full
-        (~16GB) copy of EVA-CLIP-8B themselves.
+        Initializes the retriever architecture.
+
+        Args:
+            top_k (int): Number of documents to retrieve.
+            keep_text_encoder (bool): If False (default), the text encoder is dropped 
+                after model loading to optimize VRAM. Subclasses requiring textual 
+                embedding capabilities must set this to True.
         """
         self.top_k = top_k
         self.keep_text_encoder = keep_text_encoder
@@ -64,8 +70,8 @@ class Retriever:
         ).to(self.device).eval()
 
         if not self.keep_text_encoder:
-            # Vision-only use case: drop the text encoder to save VRAM, since
-            # this configuration never calls encode_text().
+            # VRAM Optimization: Drop text-specific model components since 
+            # the baseline retriever relies exclusively on the vision encoder.
             if hasattr(self.model, "text_model"):
                 del self.model.text_model
             if hasattr(self.model, "text_projection"):
@@ -74,6 +80,7 @@ class Retriever:
         print(f"EVA-CLIP-8B loaded ({mode}).")
 
     def _embed_image(self, image: Image.Image) -> np.ndarray:
+        """Computes the L2-normalized image embedding."""
         processed = self.processor(images=image, return_tensors="pt")
         pixel_values = processed.pixel_values.to(dtype=torch.float16, device=self.device)
 
@@ -84,7 +91,7 @@ class Retriever:
         return embedding.cpu().numpy().astype("float32")
 
     def _build_context(self, url: str) -> str:
-        """Extract and concatenate relevant section_texts for a given URL."""
+        """Extracts and concatenates relevant section texts for a given URL."""
         if url not in self.kb:
             return ""
 
@@ -104,6 +111,7 @@ class Retriever:
         return "\n\n".join(context_parts)
 
     def retrieve(self, image: Image.Image) -> tuple[str, list[str]]:
+        """Executes the visual search and returns the concatenated raw context."""
         query_embedding = self._embed_image(image)
         scores, indices = self.index.search(query_embedding, k=self.top_k)
 

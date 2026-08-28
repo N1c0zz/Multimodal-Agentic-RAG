@@ -1,10 +1,14 @@
 """
-Retriever combining Multi-Hypothesis Multimodal Fusion + Rich Context.
+Combined Multimodal Retriever.
 
-Same fusion mechanism as retriever_guesses.py (see that file's docstring),
-but _build_context here adds section titles and [Source N] labels --
-the "rich context" treatment from retriever_richcontext.py, applied on top
-of the fused retrieval instead of the plain image-only one.
+This module implements a hybrid retrieval system that integrates Multimodal Query Fusion 
+with Rich Context formatting. It embeds both the query image and a textual hypothesis 
+using EVA-CLIP-8B, fusing them into a single query vector for FAISS search. 
+
+For context construction, it applies a "rich context" strategy: retrieved sections are 
+prepended with their original titles and explicitly labeled with source markers 
+(e.g., [Source N]), enabling the downstream language model to accurately attribute 
+information to specific documents.
 """
 
 import torch
@@ -65,11 +69,12 @@ class RetrieverCombined:
         print("EVA-CLIP-8B loaded successfully.")
 
     def _embed_multimodal(self, image: Image.Image, text_query: str) -> np.ndarray:
-        # 1. Visual features
+        """Computes the L2-normalized, fused multimodal embedding for the query."""
+        # 1. Visual features extraction
         processed = self.processor(images=image, return_tensors="pt")
         pixel_values = processed.pixel_values.to(dtype=torch.float16, device=self.device)
 
-        # 2. Text features (hard truncation to prevent CLIP's 77-token limit crashes)
+        # 2. Text features extraction (with hard truncation to prevent sequence length overflow)
         text_inputs = self.tokenizer(
             [text_query],
             padding=True,
@@ -79,7 +84,7 @@ class RetrieverCombined:
         )
         input_ids = text_inputs["input_ids"].to(self.device)
 
-        # 3. Encode and fuse
+        # 3. Encode and fuse modalities
         with torch.no_grad():
             img_emb = self.model.encode_image(pixel_values)
             img_emb = img_emb / img_emb.norm(p=2, dim=-1, keepdim=True)
@@ -93,7 +98,10 @@ class RetrieverCombined:
         return combined_emb.cpu().numpy().astype("float32")
 
     def _build_context(self, url: str) -> str:
-        """Rich context: section titles kept as inline labels."""
+        """
+        Builds a rich context representation by retaining section titles 
+        as inline labels for the extracted text.
+        """
         if url not in self.kb:
             return ""
 
@@ -114,6 +122,9 @@ class RetrieverCombined:
         return "\n".join(parts)
 
     def retrieve(self, image: Image.Image, query_text: str) -> tuple[str, list[str]]:
+        """
+        Executes multimodal search and returns the formatted rich context.
+        """
         query_embedding = self._embed_multimodal(image, query_text)
         scores, indices = self.index.search(query_embedding, k=self.top_k)
 
@@ -136,8 +147,8 @@ class RetrieverCombined:
             except Exception:
                 continue
 
-        # Label each source explicitly ([Source N]) so the model can
-        # attribute information to the correct document.
+        # Explicitly label each source to enable accurate information attribution
+        # by the downstream generator.
         labeled_context = "\n\n".join(
             f"[Source {i+1}]\n{part}" for i, part in enumerate(context_parts)
         )

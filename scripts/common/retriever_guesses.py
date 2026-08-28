@@ -1,18 +1,14 @@
 """
-Retriever for Multi-Hypothesis RAG (Double-Pass).
+Multi-Hypothesis Multimodal Retriever.
 
-A hybrid multimodal retrieval system using FAISS and EVA-CLIP-8B. Fuses
-L2-normalized visual (image) and semantic (text) embeddings via a tunable
-`text_weight`. The text side is expected to be a single combined query
-string (e.g. "Image tags: X, Y, Z. Question: ..."), NOT multiple separate
-hypotheses -- see the project report for why averaging separately-embedded
-hypotheses was tried elsewhere and found to underperform this single-string
-approach.
+Implements a hybrid multimodal retrieval system utilizing FAISS and EVA-CLIP-8B.
+It fuses L2-normalized visual (image) and semantic (text) embeddings via a tunable 
+`text_weight`. The textual component is expected to be a single, combined query 
+string encapsulating multiple identity hypotheses.
 
-Nearly identical to retriever_combined.py, except _build_context here does
-NOT add section titles or [Source N] labels (retriever_combined.py adds
-"rich context" on top of the same fusion mechanism) -- kept as separate,
-independently-reported experiments rather than merged into one class.
+Unlike the combined retriever, context construction in this module concatenates 
+raw section texts without injecting structural metadata (e.g., section titles 
+or explicit source labels).
 """
 
 import torch
@@ -73,11 +69,12 @@ class RetrieverGuesses:
         print("EVA-CLIP-8B loaded successfully.")
 
     def _embed_multimodal(self, image: Image.Image, text_query: str) -> np.ndarray:
-        # 1. Visual features
+        """Computes the L2-normalized, fused multimodal embedding for the query."""
+        # 1. Visual features extraction
         processed = self.processor(images=image, return_tensors="pt")
         pixel_values = processed.pixel_values.to(dtype=torch.float16, device=self.device)
 
-        # 2. Text features (hard truncation to prevent CLIP's 77-token limit crashes)
+        # 2. Text features extraction (with hard truncation to prevent sequence length overflow)
         text_inputs = self.tokenizer(
             [text_query],
             padding=True,
@@ -87,7 +84,7 @@ class RetrieverGuesses:
         )
         input_ids = text_inputs["input_ids"].to(self.device)
 
-        # 3. Encode and fuse
+        # 3. Encode and fuse modalities
         with torch.no_grad():
             img_emb = self.model.encode_image(pixel_values)
             img_emb = img_emb / img_emb.norm(p=2, dim=-1, keepdim=True)
@@ -101,6 +98,7 @@ class RetrieverGuesses:
         return combined_emb.cpu().numpy().astype("float32")
 
     def _build_context(self, url: str) -> str:
+        """Extracts and concatenates relevant section texts for a given URL."""
         if url not in self.kb:
             return ""
 
@@ -120,6 +118,7 @@ class RetrieverGuesses:
         return "\n\n".join(context_parts)
 
     def retrieve(self, image: Image.Image, query_text: str) -> tuple[str, list[str]]:
+        """Executes multimodal search and returns the concatenated raw context."""
         query_embedding = self._embed_multimodal(image, query_text)
         scores, indices = self.index.search(query_embedding, k=self.top_k)
 

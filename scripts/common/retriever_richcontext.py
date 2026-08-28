@@ -1,8 +1,12 @@
 """
-Retriever with richer context: more sections per document, with section
-titles included and clearer document boundaries between sources.
-No re-ranking, no query fusion -- isolates the effect of richer context
-alone, on top of the plain image-only FAISS retrieval.
+Rich Context Retriever.
+
+Extends the base image-only retrieval approach by restructuring the output format.
+It increases the volume of extracted sections per document and explicitly prepends 
+section titles and document boundaries (e.g., [Source N]). 
+
+This module isolates the effect of structured contextual formatting on the 
+downstream language model, operating strictly without query fusion or re-ranking.
 """
 
 import torch
@@ -15,8 +19,7 @@ from transformers import AutoModel, CLIPImageProcessor
 from paths import INDEX_PATH, KNN_PATH, KB_PATH, CACHE_DIR
 
 EXCLUDE_SECTIONS = {"references", "external links", "see also", "notes"}
-# Intentionally higher than the base Retriever's MAX_SECTIONS=4: this is the
-# whole point of the "rich context" experiment.
+# Intentionally higher than the base retriever to evaluate the impact of extended context.
 MAX_SECTIONS = 8
 
 
@@ -54,8 +57,8 @@ class RetrieverRichContext:
             cache_dir=CACHE_DIR,
         ).to(self.device).eval()
 
-        # Vision-only: drop the text encoder to save VRAM (this retriever
-        # never calls encode_text()).
+        # VRAM Optimization: Drop text-specific model components since 
+        # this retriever relies exclusively on the vision encoder.
         if hasattr(self.model, "text_model"):
             del self.model.text_model
         if hasattr(self.model, "text_projection"):
@@ -64,6 +67,7 @@ class RetrieverRichContext:
         print("EVA-CLIP-8B loaded.")
 
     def _embed_image(self, image: Image.Image) -> np.ndarray:
+        """Computes the L2-normalized image embedding."""
         processed = self.processor(images=image, return_tensors="pt")
         pixel_values = processed.pixel_values.to(dtype=torch.float16, device=self.device)
         with torch.no_grad():
@@ -72,7 +76,10 @@ class RetrieverRichContext:
         return embedding.cpu().numpy().astype("float32")
 
     def _build_context(self, url: str) -> str:
-        """Rich context: more sections than the base retriever, each labeled with its title."""
+        """
+        Builds a rich context representation by retaining section titles 
+        as inline labels for the extracted text.
+        """
         if url not in self.kb:
             return ""
 
@@ -93,6 +100,7 @@ class RetrieverRichContext:
         return "\n".join(parts)
 
     def retrieve(self, image: Image.Image) -> tuple[str, list[str]]:
+        """Executes the visual search and returns the formatted rich context."""
         query_embedding = self._embed_image(image)
         scores, indices = self.index.search(query_embedding, k=self.top_k)
 
@@ -105,8 +113,7 @@ class RetrieverRichContext:
             if context:
                 context_parts.append(context)
 
-        # Label each source explicitly so the model can attribute
-        # information to the correct document.
+        # Explicitly label each source to enable accurate information attribution
         labeled_context = "\n\n".join(
             f"[Source {i+1}]\n{part}" for i, part in enumerate(context_parts)
         )
