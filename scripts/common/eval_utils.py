@@ -1,30 +1,33 @@
 """
-Shared helpers for loading the dataset and building
-evqa_compute_metrics.py-compatible output records. Previously the
-oracle_urls / evidence_in_context computation and the dataset-loading
-list(data.values())-if-dict pattern were duplicated across every RAG script.
+Evaluation Utilities for Encyclopedic-VQA.
 
-Two DIFFERENT evidence_in_context methods exist in this project, used in
-different situations -- they are NOT interchangeable:
+This module provides shared helper functions for dataset loading and for building 
+output records compatible with the official `evqa_compute_metrics.py` evaluation script.
 
-1. compute_evidence_in_context(sample, retrieved_urls): URL-membership check.
-   Used by every script that performs real FAISS retrieval (rag, richcontext,
-   rerank, rerank_dynamic, guesses, combined) -- checks whether the oracle
-   Wikipedia URL is among the URLs actually retrieved.
-
-2. compute_evidence_in_context_by_answer_match(sample, context): substring
-   check. Used ONLY by run_inference_rag_oracle.py, which does not perform
-   FAISS retrieval at all (it uses the dataset's own pre-computed 'retrieval'
-   field directly) -- there are no retrieved URLs to compare against an
-   oracle URL, so instead this checks whether the reference answer text
-   literally appears in the given context.
+It implements two distinct methods for computing 'evidence_in_context':
+1. URL-membership check (`compute_evidence_in_context`): Used for standard retrieval 
+   pipelines (FAISS-based). It verifies if the oracle Wikipedia URL is present 
+   among the retrieved URLs.
+2. Substring check (`compute_evidence_in_context_by_answer_match`): A proxy method 
+   used exclusively when retrieval URLs are unavailable (e.g., oracle context evaluation). 
+   It checks whether the reference answer text literally appears within the context string.
+   Note: This is a weaker proxy and is not directly comparable to the URL-based metric.
 """
 
 import json
 
 
 def load_dataset(dataset_path: str) -> list:
-    """Loads the Encyclopedic-VQA subset, handling both dict and list JSON layouts."""
+    """
+    Loads the Encyclopedic-VQA subset from a JSON file.
+    Handles both dictionary and list JSON layouts transparently.
+    
+    Args:
+        dataset_path (str): Path to the dataset JSON file.
+        
+    Returns:
+        list: A list of sample dictionaries.
+    """
     with open(dataset_path, "r") as f:
         data = json.load(f)
     return list(data.values()) if isinstance(data, dict) else data
@@ -32,12 +35,15 @@ def load_dataset(dataset_path: str) -> list:
 
 def compute_evidence_in_context(sample: dict, retrieved_urls: list) -> bool:
     """
-    Whether the oracle Wikipedia URL(s) for this sample were among the
-    documents actually retrieved. sample['wikipedia_url'] may contain
-    multiple alternatives separated by '|' (same convention used throughout
-    the project and in evqa_compute_metrics.py itself).
-
-    Use this for any script that performs real FAISS retrieval.
+    Evaluates whether the oracle Wikipedia URL(s) for the current sample 
+    are present in the list of retrieved URLs.
+    
+    Args:
+        sample (dict): The dataset sample containing the 'wikipedia_url' field.
+        retrieved_urls (list): List of URLs retrieved by the vector store.
+        
+    Returns:
+        bool: True if at least one oracle URL is retrieved, False otherwise.
     """
     oracle_urls = [u.strip() for u in sample.get('wikipedia_url', '').split('|') if u.strip()]
     return any(url in retrieved_urls for url in oracle_urls)
@@ -45,14 +51,18 @@ def compute_evidence_in_context(sample: dict, retrieved_urls: list) -> bool:
 
 def compute_evidence_in_context_by_answer_match(sample: dict, context: str) -> bool:
     """
-    Whether the reference answer text appears literally inside the given
-    context string. Used ONLY when there is no retrieved-URL list to compare
-    against an oracle URL (i.e. run_inference_rag_oracle.py, which uses
-    dataset-provided context rather than performing retrieval itself).
-
-    This is a weaker/different proxy than compute_evidence_in_context and is
-    NOT directly comparable to it -- do not use both methods across rows of
-    the same results table without noting the difference.
+    Evaluates evidence presence by checking if the reference answer appears 
+    as a literal substring within the provided context.
+    
+    This function should only be used when URL-based matching is impossible 
+    (e.g., evaluating pre-provided oracle context strings).
+    
+    Args:
+        sample (dict): The dataset sample containing the 'answer' field.
+        context (str): The retrieved text context.
+        
+    Returns:
+        bool: True if the answer substring is found in the context, False otherwise.
     """
     reference = sample.get('answer', "")
     if not reference or not context:
@@ -71,17 +81,21 @@ def build_result_record(
     extra_fields: dict = None,
 ) -> dict:
     """
-    Builds a single evqa_compute_metrics.py-compatible result record.
-    - reference is kept as the RAW string (with | and && separators);
-      evqa_compute_metrics.py splits it internally, do not convert to a list.
-    - evidence_in_context is only computed here if retrieved_urls is passed
-      (leave None for the plain baseline, or for scripts that compute it
-      differently and pass it via extra_fields instead, e.g. the oracle
-      script).
-    - extra_fields lets per-script extras (e.g. high_confidence in the
-      dynamic top-k script, or a differently-computed evidence_in_context)
-      merge in without needing a separate builder. extra_fields is applied
-      AFTER the URL-based evidence_in_context, so it can override it.
+    Constructs a result record compatible with the `evqa_compute_metrics.py` script.
+    
+    The reference answer is intentionally kept as a raw string (preserving '|' and 
+    '&&' separators) to allow the evaluation script to split it internally.
+    
+    Args:
+        sample (dict): The original dataset sample.
+        prediction (str): The text generated by the model.
+        retrieved_urls (list, optional): The URLs retrieved during the episode. 
+            If provided, triggers the computation of the 'evidence_in_context' flag.
+        extra_fields (dict, optional): Additional fields to merge into the final record 
+            (e.g., filtering statistics, step counts).
+            
+    Returns:
+        dict: The formatted evaluation record.
     """
     record = {
         "data_id": sample["unique_id"],
@@ -90,8 +104,13 @@ def build_result_record(
         "answers": prediction,
         "question_type": sample.get("question_type", "automatic"),
     }
+    
     if retrieved_urls is not None:
         record["evidence_in_context"] = compute_evidence_in_context(sample, retrieved_urls)
+        
     if extra_fields:
+        # Applies extra fields, which may optionally override 'evidence_in_context'
+        # if a different computation logic is required for specific pipelines.
         record.update(extra_fields)
+        
     return record
