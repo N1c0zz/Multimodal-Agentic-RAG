@@ -25,7 +25,7 @@ This project was developed for the *Computer Vision and Cognitive Systems* cours
 Our optimized pipeline operates in an autonomous ReAct loop, strictly limiting the action space to avoid cognitive overload on compact backbones (e.g., 3B parameters). 
 
 <p align="center">
-  <img src="doc/final_architecture.png" alt="Architecture Diagram" width="90%">
+  <img src="doc/final_architecture.png" alt="Architecture Diagram" width="60%">
 </p>
 
 1. **`assess_retrieval_need`**: The agent visually inspects the image and determines if external knowledge is required.
