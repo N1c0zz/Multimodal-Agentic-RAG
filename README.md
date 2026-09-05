@@ -13,7 +13,7 @@ This project was developed for the *Computer Vision and Cognitive Systems* cours
 
 ## 🚀 Key Architectural Choices
 
-- **Entity Guessing (Visual HyDE):** Addresses the semantic gap in multimodal retrieval. Before querying the vector store, the Vision-Language Model (VLM) generates zero-shot taxonomic hypotheses about the visual subject. Fusing these text guesses with the image features drastically improves retrieval hit rates.
+- **Entity Guessing:** Addresses the semantic gap in multimodal retrieval. Before querying the vector store, the Vision-Language Model (VLM) generates zero-shot taxonomic hypotheses about the visual subject. Fusing these text guesses with the image features drastically improves retrieval hit rates.
 - **Strict Separation of Concerns:** To prevent false positives, the vector store (FAISS) processes *only* the entity guesses (no raw questions), while the relevance filter (ReAG-Critic) evaluates *only* the raw question against the retrieved text, remaining blind to potentially hallucinated guesses.
 - **Section-Level Critic Filtering:** Overcomes the classic "context truncation vs. noise" trade-off. The system retrieves *full documents* and employs a high-resolution **ReAG-Critic** model to filter out irrelevant paragraphs individually, feeding the agent a highly condensed context.
 - **Graceful Degradation:** A code-level fallback mechanism intercepts situations where the Critic filters out all retrieved evidence, forcing the agent to rely on its parametric visual reasoning rather than hallucinating over empty contexts.
@@ -50,7 +50,7 @@ We track three decoupled metrics to isolate retrieval accuracy from generation r
 | **Agentic RAG (3B Backbone)** | **30.3%** | **28.3%** | **60.8%** | **18.3%** |
 | Agentic RAG (7B Backbone) | 29.8% | **31.9%** | 57.7% | 16.7% |
 
-*Note on Backbone Scaling: While the Qwen2.5-VL-7B model exhibits superior raw parametric knowledge and pushes the retrieval Hit Rate to a massive 31.9% (via better Visual HyDE hypotheses), its overconfidence leads it to bypass safety fallbacks and answer with a verbose format, slightly degrading the final score. This exposes a crucial alignment trade-off in Agentic RAG pipelines.*
+*Note on Backbone Scaling: While the Qwen2.5-VL-7B model exhibits superior raw parametric knowledge and pushes the retrieval Hit Rate to a massive 31.9% (via better Visual Guesses hypotheses), its overconfidence leads it to bypass safety fallbacks and answer with a verbose format, slightly degrading the final score. This exposes a crucial alignment trade-off in Agentic RAG pipelines.*
 
 ---
 
@@ -67,7 +67,8 @@ python run_inference_agent.py \
 ```
 
 ## 👥 Authors
-Nicolò Morini, Daria Vulcano
+* **Nicolò Morini** - [N1c0zz](https://github.com/N1c0zz)
+* **Daria Vulcano** - [DariaVulc](https://github.com/DariaVulc)
 
 ## 📚 Acknowledgments
 This work builds upon the infrastructures and concepts provided by the AImageLab group at UNIMORE, including **Wiki-LLaVA** and **ReAG-Critic**.
