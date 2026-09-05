@@ -71,4 +71,3 @@ Nicolò Morini, Daria Vulcano
 
 ## 📚 Acknowledgments
 This work builds upon the infrastructures and concepts provided by the AImageLab group at UNIMORE, including **Wiki-LLaVA** and **ReAG-Critic**.
-```
