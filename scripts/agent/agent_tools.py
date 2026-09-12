@@ -67,7 +67,7 @@ def _generate_dedicated(image: Image.Image, prompt_text: str, model_wrapper) -> 
     Routes the request through the wrapper's plain generation method, keeping 
     the internal reasoning step independent from the main agent backbone.
     """
-    return model_wrapper.generate_plain(image, prompt_text, max_new_tokens=40)
+    return model_wrapper.generate_plain(image, prompt_text, max_new_tokens=40, temperature=0.0, do_sample=False)
 
 
 class AssessRetrievalNeedTool(Tool):
