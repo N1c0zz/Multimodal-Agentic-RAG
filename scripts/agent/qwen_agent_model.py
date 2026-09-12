@@ -139,6 +139,32 @@ class QwenAgentModel(Model):
         return self.processor.batch_decode(
             trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
         )[0].strip()
+    
+    def generate_sampled(self, image: Image.Image, prompt_text: str, max_new_tokens: int = 64, temperature: float = 0.3) -> str:
+        """
+        Single-shot sampled generation method.
+        Used when dedicated reasoning calls require a degree of creativity 
+        (e.g., assess_retrieval_need) without relying on the greedy fallback.
+        """
+        messages = [{"role": "user", "content": [
+            {"type": "image", "image": image},
+            {"type": "text", "text": prompt_text},
+        ]}]
+        text = self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        image_inputs, video_inputs = process_vision_info(messages)
+        inputs = self.processor(
+            text=[text], images=image_inputs, videos=video_inputs,
+            padding=True, return_tensors="pt",
+        ).to(self.model.device)
+        with torch.no_grad():
+            generated_ids = self.model.generate(
+                **inputs, max_new_tokens=max_new_tokens, 
+                do_sample=True, temperature=temperature, top_p=0.9, top_k=None,
+            )
+        trimmed = [o[len(i):] for i, o in zip(inputs.input_ids, generated_ids)]
+        return self.processor.batch_decode(
+            trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
+        )[0].strip()
 
     def generate(self, messages, stop_sequences=None, response_format=None,
                  tools_to_call_from=None, **kwargs) -> ChatMessage:

@@ -69,6 +69,13 @@ def _generate_dedicated(image: Image.Image, prompt_text: str, model_wrapper) -> 
     """
     return model_wrapper.generate_plain(image, prompt_text, max_new_tokens=40, temperature=0.0, do_sample=False)
 
+def _generate_sampled(image: Image.Image, prompt_text: str, model_wrapper, temperature: float = 0.3) -> str:
+    """
+    Dedicated, non-agentic generation with sampling.
+    Allows injecting creativity (temperature) into specific internal reasoning steps.
+    """
+    return model_wrapper.generate_sampled(image, prompt_text, max_new_tokens=40, temperature=temperature)
+
 
 class AssessRetrievalNeedTool(Tool):
     name = "assess_retrieval_need"
@@ -105,7 +112,7 @@ class AssessRetrievalNeedTool(Tool):
 
         prompt = ASSESS_PROMPT_TEMPLATE.format(question=self.current_question)
         try:
-            raw = _generate_dedicated(self.current_image, prompt, self.model_wrapper)
+            raw = _generate_dedicated(self.current_image, prompt, self.model_wrapper, temperature=0.3)
         except Exception:
             raw = ""
 
