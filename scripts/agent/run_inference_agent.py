@@ -20,6 +20,7 @@ import argparse
 from tqdm import tqdm
 from PIL import Image
 from smolagents import ToolCallingAgent
+from transformers import set_seed
 
 from eval_utils import load_dataset, build_result_record
 from retriever_agent import RetrieverAgent
@@ -105,6 +106,15 @@ def context_augmented_fallback(question, image, context, model):
     )
     return model.generate_plain(image, prompt_text, max_new_tokens=64)
 
+def seed_everything(seed=42):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    set_seed(seed)
+    
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 def main():
     parser = argparse.ArgumentParser()
@@ -120,7 +130,10 @@ def main():
     parser.add_argument("--max_retries", type=int, default=2)
     parser.add_argument("--n_samples", type=int, default=None)
     parser.add_argument("--verbosity_level", type=int, default=1)
+    parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
+
+    seed_everything(args.seed)
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
