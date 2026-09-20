@@ -63,6 +63,7 @@ python run_inference_agent.py \
     --top_k 8 \
     --text_weight 0.3 \
     --output_dir "/path/to/output"
+```
 
 ## 👥 Authors
 * **Nicolò Morini** - [N1c0zz](https://github.com/N1c0zz)
