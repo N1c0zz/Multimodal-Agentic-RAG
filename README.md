@@ -47,7 +47,7 @@ We track three decoupled metrics to isolate retrieval accuracy from generation r
 | :--- | :---: | :---: | :---: | :---: |
 | Plain VLM Baseline (3B) | 17.6% | - | - | - |
 | Static RAG (Best Config) | 24.4% | 26.3% | 59.6% | 12.0% |
-| **Agentic RAG (3B Backbone)** | **31.1%** | **32.5\%** | **58.5%** | **17.9%** |
+| **Agentic RAG (3B Backbone)** | **30.0%** | **28.3\%** | **60.5%** | **18.1%** |
 
 *Note: The Agentic RAG configuration demonstrates significant gains over static baselines, effectively leveraging Autonomous Retrieval Bypass (answering directly via parametric knowledge in 11.6% of unambiguous episodes) and rigorous Critic filtering.*
 
@@ -55,7 +55,7 @@ We track three decoupled metrics to isolate retrieval accuracy from generation r
 
 ## 🛠️ Usage
 
-To run the full Agentic pipeline with the optimal configuration (10 Guesses, $\alpha=0.3$, $k=8$):
+To run the full Agentic pipeline with the optimal configuration (5 Guesses, $\alpha=0.3$, $k=8$):
 
 ```bash
 python run_inference_agent.py \
