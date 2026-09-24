@@ -19,8 +19,8 @@ from smolagents import Tool
 GUESS_PROMPT_TEMPLATE = (
     "Look at this image and read the following question: '{question}'. "
     "Identify the specific entity (e.g., proper name, biological species, building) "
-    "the question is asking about. Provide your top 3 most probable guesses for its identity. "
-    "Output ONLY a comma-separated list of these 3 names "
+    "the question is asking about. Provide your top 5 most probable guesses for its identity. "
+    "Output ONLY a comma-separated list of these 5 names "
     "(e.g., Fuchsia magellanica, Hibiscus rosa-sinensis, Mandevilla sanderi). "
     "Do not write full sentences, background descriptions, or explanations."
 )
@@ -64,12 +64,10 @@ class EpisodeState:
 def _generate_dedicated(image: Image.Image, prompt_text: str, model_wrapper) -> str:
     """
     Dedicated, non-agentic, single-shot greedy generation.
-    Routes the request through the wrapper's plain generation method, keeping 
-    the internal reasoning step independent from the main agent backbone.
     """
-    return model_wrapper.generate_plain(image, prompt_text, max_new_tokens=40, temperature=0.0, do_sample=False)
+    return model_wrapper.generate_plain(image, prompt_text, max_new_tokens=40, temperature=0.1, do_sample=True)
 
-def _generate_sampled(image: Image.Image, prompt_text: str, model_wrapper, temperature: float = 0.3) -> str:
+def _generate_sampled(image: Image.Image, prompt_text: str, model_wrapper, temperature: float = 0.1) -> str:
     """
     Dedicated, non-agentic generation with sampling.
     Allows injecting creativity (temperature) into specific internal reasoning steps.
@@ -112,7 +110,7 @@ class AssessRetrievalNeedTool(Tool):
 
         prompt = ASSESS_PROMPT_TEMPLATE.format(question=self.current_question)
         try:
-            raw = _generate_dedicated(self.current_image, prompt, self.model_wrapper, temperature=0.3)
+            raw = _generate_sampled(self.current_image, prompt, self.model_wrapper, temperature=0.1)
         except Exception:
             raw = ""
 
