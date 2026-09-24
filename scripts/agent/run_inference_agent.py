@@ -20,6 +20,9 @@ import argparse
 from tqdm import tqdm
 from PIL import Image
 from smolagents import ToolCallingAgent
+import random
+import torch
+import numpy as np
 from transformers import set_seed
 
 from eval_utils import load_dataset, build_result_record
